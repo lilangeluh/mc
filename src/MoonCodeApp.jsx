@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import "./index.css";
 import { supabase } from "./supabaseClient";
+import * as tmImage from "@teachablemachine/image";
 
 /** ---------------------------
  *  Helpers: Supabase I/O
@@ -92,6 +93,246 @@ function showSupabaseError(e, fallback = "Supabase error") {
 /** ---------------------------
  *  Moon phase utilities (your existing stuff)
  *  --------------------------*/
+
+const TM_MODEL_URL = "/moon-model/model.json";
+const TM_METADATA_URL = "/moon-model/metadata.json";
+
+// Change this to match EXACTLY the class name you used in Teachable Machine
+// e.g. "Moon" or "moon" or "MOON"
+const MOON_CLASS_NAME = "Moon";
+
+// Confidence threshold: start here, adjust later (0.80–0.95 typical)
+const MOON_THRESHOLD = 0.85;
+
+function MoonCameraCapture({
+  title,
+  subtitle,
+  onVerifiedMoon,     // called when moon passes verification
+  onBack,
+}) {
+  const videoRef = React.useRef(null);
+  const canvasRef = React.useRef(null);
+
+  const [model, setModel] = React.useState(null);
+  const [modelLoading, setModelLoading] = React.useState(true);
+
+  const [stream, setStream] = React.useState(null);
+  const [cameraError, setCameraError] = React.useState("");
+
+  const [capturedDataUrl, setCapturedDataUrl] = React.useState(null);
+  const [verifying, setVerifying] = React.useState(false);
+  const [resultText, setResultText] = React.useState("");
+
+  // 1) Load Teachable Machine model once
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setModelLoading(true);
+        const m = await tmImage.load(TM_MODEL_URL, TM_METADATA_URL);
+        if (!alive) return;
+        setModel(m);
+      } catch (e) {
+        console.error(e);
+        setCameraError("Model failed to load. Check /public/moon-model files.");
+      } finally {
+        if (alive) setModelLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // 2) Start camera on mount
+  React.useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      try {
+        setCameraError("");
+        const s = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false,
+        });
+        if (!alive) return;
+
+        setStream(s);
+        if (videoRef.current) {
+          videoRef.current.srcObject = s;
+          await videoRef.current.play();
+        }
+      } catch (e) {
+        console.error(e);
+        setCameraError(
+          "Camera permission denied or unavailable. (Note: camera works on localhost and HTTPS.)"
+        );
+      }
+    })();
+
+    return () => {
+      alive = false;
+      // stop camera
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // stop stream when stream changes / unmount
+  React.useEffect(() => {
+    return () => {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+    };
+  }, [stream]);
+
+  const takePhoto = () => {
+    setResultText("");
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    const w = video.videoWidth || 640;
+    const h = video.videoHeight || 480;
+
+    canvas.width = w;
+    canvas.height = h;
+
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, w, h);
+
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+    setCapturedDataUrl(dataUrl);
+  };
+
+  const retake = () => {
+    setCapturedDataUrl(null);
+    setResultText("");
+  };
+
+  const verifyMoon = async () => {
+    if (!model) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    setVerifying(true);
+    setResultText("");
+
+    try {
+      const predictions = await model.predict(canvas);
+
+      // predictions example: [{ className, probability }, ...]
+      const moonPred = predictions.find((p) => p.className === MOON_CLASS_NAME);
+
+      const moonProb = moonPred?.probability ?? 0;
+
+      if (moonProb >= MOON_THRESHOLD) {
+        setResultText(`Moon verified ✦ (${Math.round(moonProb * 100)}%)`);
+
+        // give your app the captured image + confidence
+        onVerifiedMoon({
+          dataUrl: capturedDataUrl,
+          confidence: moonProb,
+          verifiedAt: new Date().toISOString(),
+        });
+      } else {
+        setResultText(
+          `Not moon enough (${Math.round(moonProb * 100)}%). Find the moon and try again.`
+        );
+      }
+    } catch (e) {
+      console.error(e);
+      setResultText("Verification failed. Try again.");
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  return (
+    <div className="app-shell">
+      <div className="capture-content">
+        {onBack && (
+          <button onClick={onBack} className="back-btn">
+            ← Back
+          </button>
+        )}
+
+        <div className="capture-text">
+          <h2>{title}</h2>
+          <p>{subtitle}</p>
+        </div>
+
+        {cameraError ? (
+          <div className="empty-state">
+            <p>{cameraError}</p>
+          </div>
+        ) : (
+          <div className="capture-frame" style={{ width: "100%", maxWidth: 420 }}>
+            <div className="capture-inner" style={{ padding: 0 }}>
+              {!capturedDataUrl ? (
+                <video
+                  ref={videoRef}
+                  playsInline
+                  muted
+                  style={{
+                    width: "100%",
+                    borderRadius: 16,
+                    background: "#0a0a0f",
+                  }}
+                />
+              ) : (
+                <img
+                  src={capturedDataUrl}
+                  alt="Captured"
+                  style={{ width: "100%", borderRadius: 16 }}
+                />
+              )}
+
+              {/* Hidden canvas used for capture + inference */}
+              <canvas ref={canvasRef} style={{ display: "none" }} />
+            </div>
+          </div>
+        )}
+
+        {modelLoading && !cameraError && (
+          <p className="capture-instruction">Loading moon model…</p>
+        )}
+
+        {!cameraError && (
+          <>
+            {!capturedDataUrl ? (
+              <button
+                onClick={takePhoto}
+                className="btn-capture"
+                disabled={modelLoading}
+                title="Take photo"
+              >
+                <span className="capture-circle" />
+              </button>
+            ) : (
+              <div style={{ display: "flex", gap: 12, width: "100%", maxWidth: 420 }}>
+                <button onClick={retake} className="btn-send" style={{ flex: 1 }}>
+                  Retake
+                </button>
+                <button
+                  onClick={verifyMoon}
+                  className="btn-send"
+                  style={{ flex: 1 }}
+                  disabled={verifying || modelLoading}
+                >
+                  {verifying ? "Verifying…" : "Verify Moon"}
+                </button>
+              </div>
+            )}
+
+            {resultText && (
+              <p className="capture-instruction" style={{ marginTop: 12 }}>
+                {resultText}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const INITIAL_CONTACTS = [
   { id: 1, name: "Luna Chen", initials: "LC", location: "Queens, NY" },
@@ -802,13 +1043,17 @@ const MoonCodeApp = () => {
       )}
 
       {route === "sendCapture" && (
-        <CaptureScreen
-          title="Capture your moon"
-          subtitle="Seal your letter with tonight's light"
-          onCapture={handleCaptureSend}
-          onBack={() => setRoute("inbox")}
-        />
-      )}
+  <MoonCameraCapture
+    title="Capture your moon"
+    subtitle="Seal your letter with tonight's light"
+    onBack={() => setRoute("inbox")}
+    onVerifiedMoon={(capture) => {
+      // store the REAL photo + confidence
+      setSendPhoto(capture);
+      setRoute("selectRecipient");
+    }}
+  />
+)}
 
       {route === "selectRecipient" && (
         <SelectRecipientScreen
@@ -834,13 +1079,35 @@ const MoonCodeApp = () => {
       )}
 
       {route === "unlockCapture" && (
-        <CaptureScreen
-          title="Capture to unlock"
-          subtitle="Your moon will reveal this letter"
-          onCapture={handleCaptureUnlock}
-          onBack={() => setRoute("inbox")}
-        />
-      )}
+  <MoonCameraCapture
+    title="Capture to unlock"
+    subtitle="Your moon will reveal this letter"
+    onBack={() => setRoute("inbox")}
+    onVerifiedMoon={(capture) => {
+      // this is where you proceed to unlock / print
+      // you can save capture as receivePhoto if you want
+      // then call your Supabase unlock function
+      (async () => {
+        const unlockDate = new Date();
+        try {
+          const row = await unlockMessage({
+            id: activeMessage.id,
+            receivePhoto: capture, // store real capture object
+          });
+
+          const mapped = mapRowToMessage(row, userData.name || "You");
+          setActiveMessage(mapped);
+          setMessages((prev) => prev.map((m) => (m.id === mapped.id ? mapped : m)));
+
+          setRoute("printing");
+        } catch (e) {
+          console.error(e);
+          alert("Failed to unlock message (check Supabase + RLS).");
+        }
+      })();
+    }}
+  />
+)}
 
       {route === "printing" && (
         <PrintingScreen message={activeMessage} onComplete={handlePrintingComplete} />
