@@ -28,13 +28,6 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
-/*moon phase thing*/
-.phase-hero-img {
-  width: 64px;
-  height: 64px;
-  object-fit: contain;
-  display: block;
-}
 
 /* App Shell */
 .app-shell {
