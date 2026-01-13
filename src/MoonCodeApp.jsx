@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useState, useRef } from "react";
 import "./index.css";
 import { supabase } from "./supabaseClient";
 
+// Import moon phase images from assets
+import lastQuarterImg from "./assets/last_quarter.png";
+import waningCrescentImg from "./assets/waning_crescent.png";
+
 /** ---------------------------
  *  Helpers: Supabase I/O
  *  --------------------------*/
@@ -632,54 +636,63 @@ const LOCATION_COORDS = {
   "Melbourne, Australia": { lat: -37.8136, lon: 144.9631 },
   "Brisbane, Australia": { lat: -27.4698, lon: 153.0251 },
 };
+
 const MOON_PHASES = [
   {
     name: "New Moon",
     meaning: "beginnings",
     personalMessage:
       "Tonight the sky holds its breath. This is your moment to plant seeds in the dark—wishes, intentions, quiet promises to yourself. What you begin now grows in secret.",
+    image: null, // No custom image for this phase
   },
   {
     name: "Waxing Crescent",
     meaning: "intentions",
     personalMessage:
       "A sliver of light emerges. Your intentions are taking their first breath. Stay gentle with your hopes—they are young and tender, like new leaves reaching toward warmth.",
+    image: null,
   },
   {
     name: "First Quarter",
     meaning: "decisions",
     personalMessage:
       "Half-lit, half-shadowed. You stand at a crossroads tonight. The universe asks you to choose, to commit. Trust the direction your heart leans.",
+    image: null,
   },
   {
     name: "Waxing Gibbous",
     meaning: "refinement",
     personalMessage:
       "Almost full, almost there. This is the time to adjust, to polish, to tend carefully to what you've been building. Patience—the bloom is near.",
+    image: null,
   },
   {
     name: "Full Moon",
     meaning: "culmination",
     personalMessage:
       "The moon shows her whole face tonight. Everything is illuminated—your work, your heart, your truth. Let yourself be seen. Celebrate how far you've traveled.",
+    image: null,
   },
   {
     name: "Waning Gibbous",
     meaning: "gratitude",
     personalMessage:
       "The light begins its retreat. Take this moment to give thanks—for lessons learned, for love received, for the fullness that was. Gratitude softens the release.",
+    image: null,
   },
   {
     name: "Last Quarter",
     meaning: "release",
     personalMessage:
       "Half the light has faded. What no longer serves you? This is your permission to let go—of old stories, of heavy things, of what has run its course.",
+    image: lastQuarterImg, // Custom image for Last Quarter
   },
   {
     name: "Waning Crescent",
     meaning: "rest",
     personalMessage:
       "The thinnest crescent whispers: rest now. Retreat inward. Dream deeply. The darkness before renewal is not emptiness—it is preparation.",
+    image: waningCrescentImg, // Custom image for Waning Crescent
   },
 ];
 
@@ -688,7 +701,8 @@ const MS_PER_DAY = 1000 * 60 * 60 * 24;
 const SYNODIC_MONTH = 29.53058867;
 const KNOWN_NEW_MOON = new Date(Date.UTC(2000, 0, 6, 18, 14, 0));
 
-const getMoonPhase = (date) => {
+// Fallback local calculation (used if API fails)
+const getMoonPhaseLocal = (date) => {
   const daysSince = (date - KNOWN_NEW_MOON) / MS_PER_DAY;
   const ageDays = ((daysSince % SYNODIC_MONTH) + SYNODIC_MONTH) % SYNODIC_MONTH;
   const phaseIndex = Math.floor((ageDays / SYNODIC_MONTH) * 8 + 0.5) % 8;
@@ -755,6 +769,36 @@ const formatShortDateTime = (date) =>
     minute: "2-digit",
   });
 
+// Get time-based greeting according to user's timezone
+const getTimeBasedGreeting = (timezone) => {
+  let hour;
+  
+  if (timezone) {
+    try {
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        hour12: false,
+        timeZone: timezone,
+      });
+      hour = parseInt(formatter.format(new Date()), 10);
+    } catch {
+      hour = new Date().getHours();
+    }
+  } else {
+    hour = new Date().getHours();
+  }
+
+  if (hour >= 5 && hour < 12) {
+    return "Good morning";
+  } else if (hour >= 12 && hour < 17) {
+    return "Good afternoon";
+  } else if (hour >= 17 && hour < 21) {
+    return "Good evening";
+  } else {
+    return "Good night";
+  }
+};
+
 /** ---------------------------
  *  UI Components
  *  --------------------------*/
@@ -792,6 +836,28 @@ const MoonIcon = ({ phase, size = 48 }) => {
       </g>
     </svg>
   );
+};
+
+// Moon visual component that uses custom images when available
+const MoonVisual = ({ phase, size = 64 }) => {
+  const phaseData = MOON_PHASES.find((p) => p.name === phase?.name);
+  
+  if (phaseData?.image) {
+    return (
+      <img 
+        src={phaseData.image} 
+        alt={phase?.name || "Moon phase"} 
+        style={{ 
+          width: size, 
+          height: size, 
+          objectFit: "contain",
+          borderRadius: "50%",
+        }} 
+      />
+    );
+  }
+  
+  return <MoonIcon phase={phase} size={size} />;
 };
 
 const BottomNav = ({ current, onSelect, onSend }) => (
@@ -893,10 +959,13 @@ const OnboardingScreen = ({
   </div>
 );
 
-const InboxScreen = ({ userData, messages, currentPhase, onOpen, onCompose, onLogout }) => {
+const InboxScreen = ({ userData, messages, currentPhase, moonPhaseLoading, onOpen, onCompose, onLogout }) => {
   const incoming = messages.filter((msg) => msg.from !== "You");
   const pending = incoming.filter((msg) => (msg.locked || !msg.receivePhoto) && !msg.archived);
   const sent = messages.filter((msg) => msg.from === "You");
+
+  // Get time-based greeting using user's timezone
+  const greeting = getTimeBasedGreeting(userData.locationData?.timezone);
 
   return (
     <div className="app-shell">
@@ -904,25 +973,25 @@ const InboxScreen = ({ userData, messages, currentPhase, onOpen, onCompose, onLo
         <header className="inbox-header">
           <div>
             <p className="date-display">{formatFullDate(new Date())}</p>
-            <h1 className="greeting">Good evening{userData.name ? `, ${userData.name}` : ""}</h1>
+            <h1 className="greeting">{greeting}{userData.name ? `, ${userData.name}` : ""}</h1>
           </div>
           <button onClick={onLogout} className="btn-ghost">Log out</button>
         </header>
 
         <div className="phase-card">
           <div className="phase-visual">
-            <MoonIcon phase={currentPhase} size={64} />
+            <MoonVisual phase={currentPhase} size={64} />
           </div>
           <div className="phase-info">
-            <p className="phase-name">{currentPhase.name}</p>
+            <p className="phase-name">
+              {moonPhaseLoading ? "Loading..." : currentPhase.name}
+            </p>
             <p className="phase-meaning">A time for {currentPhase.meaning}</p>
           </div>
           <p className="phase-message">{currentPhase.personalMessage}</p>
         </div>
 
-        <button onClick={onCompose} className="compose-callout">
-          Compose a letter
-        </button>
+        {/* Removed the "Compose a letter" button */}
 
         <section className="message-section">
           <h2 className="section-title">Awaiting your moon</h2>
@@ -1229,14 +1298,88 @@ const MoonCodeApp = () => {
   const [locationSuggestions, setLocationSuggestions] = useState([]);
   const [locationLoading, setLocationLoading] = useState(false);
 
-  const currentPhase = useMemo(() => {
-    const now = new Date();
-    const offsetHours = userData.locationData?.timezone
-      ? getTimezoneOffsetHours(userData.locationData.timezone, now)
-      : getLocationOffsetHours(userData.location);
-    const adjusted = new Date(now.getTime() + offsetHours * MS_PER_HOUR);
-    return getMoonPhase(adjusted);
-  }, [userData.location, userData.locationData]);
+  // Universal moon phase from API
+  const [currentPhase, setCurrentPhase] = useState(MOON_PHASES[0]);
+  const [moonPhaseLoading, setMoonPhaseLoading] = useState(true);
+
+  // Fetch universal moon phase from API
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchMoonPhase() {
+      setMoonPhaseLoading(true);
+      
+      try {
+        // Using Farmsense Moon Phase API (free, no key required)
+        // This API returns moon phase data based on Unix timestamp
+        const timestamp = Math.floor(Date.now() / 1000);
+        const response = await fetch(
+          `https://api.farmsense.net/v1/moonphases/?d=${timestamp}`
+        );
+        
+        if (!response.ok) {
+          throw new Error("Moon phase API request failed");
+        }
+        
+        const data = await response.json();
+        
+        if (!isMounted) return;
+        
+        if (data && data.length > 0) {
+          const moonData = data[0];
+          const phaseName = moonData.Phase;
+          
+          // Map API phase name to our MOON_PHASES array
+          const phaseMapping = {
+            "New Moon": "New Moon",
+            "Waxing Crescent": "Waxing Crescent",
+            "First Quarter": "First Quarter",
+            "Waxing Gibbous": "Waxing Gibbous",
+            "Full Moon": "Full Moon",
+            "Waning Gibbous": "Waning Gibbous",
+            "Last Quarter": "Last Quarter",
+            "Third Quarter": "Last Quarter", // Alternative name
+            "Waning Crescent": "Waning Crescent",
+          };
+          
+          const mappedPhaseName = phaseMapping[phaseName] || phaseName;
+          const phase = MOON_PHASES.find(p => p.name === mappedPhaseName);
+          
+          if (phase) {
+            setCurrentPhase(phase);
+            console.log("🌙 Moon phase from API:", mappedPhaseName);
+          } else {
+            // Fallback to local calculation if phase name doesn't match
+            console.warn("Unknown phase from API:", phaseName, "- using local calculation");
+            setCurrentPhase(getMoonPhaseLocal(new Date()));
+          }
+        } else {
+          throw new Error("No moon phase data returned");
+        }
+      } catch (error) {
+        console.error("Failed to fetch moon phase from API:", error);
+        // Fallback to local calculation
+        if (isMounted) {
+          setCurrentPhase(getMoonPhaseLocal(new Date()));
+          console.log("🌙 Using local moon phase calculation as fallback");
+        }
+      } finally {
+        if (isMounted) {
+          setMoonPhaseLoading(false);
+        }
+      }
+    }
+
+    fetchMoonPhase();
+    
+    // Refresh moon phase every hour
+    const interval = setInterval(fetchMoonPhase, 60 * 60 * 1000);
+    
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)),
@@ -1443,6 +1586,7 @@ const MoonCodeApp = () => {
           userData={userData}
           messages={sortedMessages}
           currentPhase={currentPhase}
+          moonPhaseLoading={moonPhaseLoading}
           onOpen={handleOpenMessage}
           onCompose={handleStartSend}
           onLogout={() => {
