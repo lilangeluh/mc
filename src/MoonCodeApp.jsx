@@ -6,7 +6,6 @@ import { supabase } from "./supabaseClient";
  *  Helpers: Supabase I/O
  *  --------------------------*/
 
-// PostgREST filter strings need quoting if names contain spaces, commas, etc.
 function pgQuote(value) {
   const v = String(value ?? "").replace(/"/g, '\\"');
   return `"${v}"`;
@@ -57,7 +56,6 @@ async function unlockMessage({ id, receivePhoto }) {
   return data;
 }
 
-// Map DB row -> UI message (make "You" consistent)
 function mapRowToMessage(row, viewerName) {
   const viewer = viewerName?.trim() || "You";
   const isSender = row.sender === viewer;
@@ -72,7 +70,7 @@ function mapRowToMessage(row, viewerName) {
     receiveAt: row.receive_at ?? null,
     sendPhoto: row.send_photo ?? null,
     receivePhoto: row.receive_photo ?? null,
-    archived: !!row.receive_photo, // once unlocked it goes to archive
+    archived: !!row.receive_photo,
     rawSender: row.sender,
     rawRecipient: row.recipient,
   };
@@ -91,6 +89,7 @@ function showSupabaseError(e, fallback = "Supabase error") {
 
 /** ---------------------------
  *  Moon Model Configuration
+ *  FIXED: Using import.meta.env.BASE_URL for GitHub Pages
  *  --------------------------*/
 
 const TM_MODEL_URL = import.meta.env.BASE_URL + "moon-model/model.json";
@@ -100,13 +99,13 @@ const TM_METADATA_URL = import.meta.env.BASE_URL + "moon-model/metadata.json";
 const MOON_CLASS_NAME = "Moon";
 
 // Confidence threshold: lower = more permissive, higher = stricter
-const MOON_THRESHOLD = 0.75;
+const MOON_THRESHOLD = 0.70;
 
 /** ---------------------------
- *  MoonCameraCapture Component (Improved)
+ *  MoonCameraCapture Component - REAL CAMERA + ML VERIFICATION
  *  --------------------------*/
 
-function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
+function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack, locationLabel, locationCoords }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -117,10 +116,12 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
 
   const [stream, setStream] = useState(null);
   const [cameraError, setCameraError] = useState("");
+  const [cameraReady, setCameraReady] = useState(false);
 
   const [capturedDataUrl, setCapturedDataUrl] = useState(null);
   const [verifying, setVerifying] = useState(false);
   const [resultText, setResultText] = useState("");
+  const [restartToken, setRestartToken] = useState(0);
 
   // 1. Load Teachable Machine model
   useEffect(() => {
@@ -131,13 +132,14 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
       setModelError("");
 
       try {
-        // First, verify the files are accessible
-        console.log("🔍 Checking model files...");
+        console.log("🔍 Loading model from:", TM_MODEL_URL);
+        console.log("🔍 Loading metadata from:", TM_METADATA_URL);
 
+        // First, verify the files are accessible
         const modelCheck = await fetch(TM_MODEL_URL);
         if (!modelCheck.ok) {
           throw new Error(
-            `model.json not found (${modelCheck.status}). Make sure it's in public/moon-model/`
+            `model.json not found (${modelCheck.status}). URL: ${TM_MODEL_URL}`
           );
         }
         console.log("✅ model.json accessible");
@@ -145,7 +147,7 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
         const metaCheck = await fetch(TM_METADATA_URL);
         if (!metaCheck.ok) {
           throw new Error(
-            `metadata.json not found (${metaCheck.status}). Make sure it's in public/moon-model/`
+            `metadata.json not found (${metaCheck.status}). URL: ${TM_METADATA_URL}`
           );
         }
         const metadata = await metaCheck.json();
@@ -190,12 +192,20 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
   // 2. Start camera
   useEffect(() => {
     let alive = true;
+    let currentStream = null;
 
     async function startCamera() {
       try {
         setCameraError("");
+        setCameraReady(false);
+        
+        // Request camera with preference for back camera on mobile
         const mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
+          video: { 
+            facingMode: { ideal: "environment" }, 
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 } 
+          },
           audio: false,
         });
 
@@ -204,22 +214,40 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
           return;
         }
 
+        currentStream = mediaStream;
         setStream(mediaStream);
+        
         if (videoRef.current) {
           videoRef.current.srcObject = mediaStream;
-          await videoRef.current.play();
+          
+          // Wait for video to be ready
+          videoRef.current.onloadedmetadata = () => {
+            if (alive && videoRef.current) {
+              videoRef.current.play()
+                .then(() => {
+                  console.log("✅ Camera started, dimensions:", 
+                    videoRef.current.videoWidth, "x", videoRef.current.videoHeight);
+                  setCameraReady(true);
+                })
+                .catch(err => {
+                  console.error("Video play error:", err);
+                  setCameraError("Could not start video playback");
+                });
+            }
+          };
         }
-        console.log("✅ Camera started");
       } catch (e) {
         console.error("❌ Camera error:", e);
         if (alive) {
-          setCameraError(
-            e.name === "NotAllowedError"
-              ? "Camera permission denied. Please allow camera access."
-              : e.name === "NotFoundError"
-              ? "No camera found on this device."
-              : `Camera error: ${e.message}`
-          );
+          if (e.name === "NotAllowedError") {
+            setCameraError("Camera permission denied. Please allow camera access in your browser settings.");
+          } else if (e.name === "NotFoundError") {
+            setCameraError("No camera found on this device.");
+          } else if (e.name === "NotReadableError") {
+            setCameraError("Camera is in use by another application.");
+          } else {
+            setCameraError(`Camera error: ${e.message}`);
+          }
         }
       }
     }
@@ -228,10 +256,13 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
 
     return () => {
       alive = false;
+      if (currentStream) {
+        currentStream.getTracks().forEach((t) => t.stop());
+      }
     };
-  }, []);
+  }, [restartToken]);
 
-  // Stop stream on unmount or stream change
+  // Cleanup stream on unmount
   useEffect(() => {
     return () => {
       if (stream) {
@@ -245,10 +276,16 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
     setResultText("");
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas) return;
+    
+    if (!video || !canvas) {
+      console.error("Video or canvas not available");
+      return;
+    }
 
     const w = video.videoWidth || 640;
     const h = video.videoHeight || 480;
+
+    console.log("📷 Capturing photo at", w, "x", h);
 
     canvas.width = w;
     canvas.height = h;
@@ -258,22 +295,32 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
     setCapturedDataUrl(dataUrl);
-    console.log("📷 Photo captured");
+    console.log("📷 Photo captured successfully");
   };
 
   const retake = () => {
     setCapturedDataUrl(null);
     setResultText("");
+    setVerifying(false);
+    setCameraReady(false);
+    setRestartToken((token) => token + 1);
   };
 
   // 4. Verify moon with model
   const verifyMoon = async () => {
-    if (!model) return;
+    if (!model) {
+      setResultText("Model not loaded yet. Please wait.");
+      return;
+    }
+    
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      setResultText("Canvas not available.");
+      return;
+    }
 
     setVerifying(true);
-    setResultText("");
+    setResultText("Analyzing image...");
 
     try {
       let predictions;
@@ -314,15 +361,24 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
       console.log(`🌙 Moon confidence: ${Math.round(moonProb * 100)}%`);
 
       if (moonProb >= MOON_THRESHOLD) {
-        setResultText(`✦ Moon verified (${Math.round(moonProb * 100)}%)`);
-        onVerifiedMoon({
-          dataUrl: capturedDataUrl,
-          confidence: moonProb,
-          verifiedAt: new Date().toISOString(),
-        });
+        setResultText(`✦ Moon verified! (${Math.round(moonProb * 100)}% confidence)`);
+        
+        // Small delay to show success message before proceeding
+        setTimeout(() => {
+          onVerifiedMoon({
+            dataUrl: capturedDataUrl,
+            confidence: moonProb,
+            verifiedAt: new Date().toISOString(),
+            location: locationLabel || "",
+            coords: locationCoords || null,
+          });
+        }, 1000);
       } else {
+        const notMoonPred = predictions.find(
+          (p) => p.className.toLowerCase() !== MOON_CLASS_NAME.toLowerCase()
+        );
         setResultText(
-          `Not enough moon (${Math.round(moonProb * 100)}%). Point at the moon and try again.`
+          `Not a moon (${Math.round(moonProb * 100)}% moon, ${Math.round((notMoonPred?.probability || 0) * 100)}% not moon). Try pointing at the moon!`
         );
       }
     } catch (e) {
@@ -335,6 +391,7 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
 
   // Render
   const hasError = cameraError || modelError;
+  const isReady = !modelLoading && cameraReady && !hasError;
 
   return (
     <div className="app-shell">
@@ -368,23 +425,38 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
         {/* Camera / captured image */}
         {!hasError && (
           <div className="capture-frame" style={{ width: "100%", maxWidth: 420 }}>
-            <div className="capture-inner" style={{ padding: 0 }}>
+            <div className="capture-inner" style={{ padding: 0, position: "relative" }}>
               {!capturedDataUrl ? (
-                <video
-                  ref={videoRef}
-                  playsInline
-                  muted
-                  style={{
-                    width: "100%",
-                    borderRadius: 16,
-                    background: "#0a0a0f",
-                  }}
-                />
+                <>
+                  <video
+                    ref={videoRef}
+                    playsInline
+                    muted
+                    autoPlay
+                    style={{
+                      width: "100%",
+                      borderRadius: 16,
+                      background: "#0a0a0f",
+                      display: "block",
+                    }}
+                  />
+                  {!cameraReady && (
+                    <div style={{
+                      position: "absolute",
+                      top: "50%",
+                      left: "50%",
+                      transform: "translate(-50%, -50%)",
+                      color: "#888",
+                    }}>
+                      Starting camera...
+                    </div>
+                  )}
+                </>
               ) : (
                 <img
                   src={capturedDataUrl}
                   alt="Captured"
-                  style={{ width: "100%", borderRadius: 16 }}
+                  style={{ width: "100%", borderRadius: 16, display: "block" }}
                 />
               )}
               <canvas ref={canvasRef} style={{ display: "none" }} />
@@ -404,8 +476,8 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
               <button
                 onClick={takePhoto}
                 className="btn-capture"
-                disabled={modelLoading}
-                title="Take photo"
+                disabled={!isReady}
+                title={isReady ? "Take photo" : "Waiting for camera and model..."}
               >
                 <span className="capture-circle" />
               </button>
@@ -425,26 +497,21 @@ function MoonCameraCapture({ title, subtitle, onVerifiedMoon, onBack }) {
               </div>
             )}
 
-            {resultText && (
-              <p
-                className="capture-instruction"
-                style={{
-                  marginTop: 12,
-                  color: resultText.includes("verified") ? "#90EE90" : "#ffcc00",
-                }}
-              >
-                {resultText}
-              </p>
-            )}
-          </>
+        {resultText && (
+          <div
+            className={`capture-note ${
+              resultText.includes("verified")
+                ? "capture-note--success"
+                : resultText.includes("Analyzing")
+                ? "capture-note--neutral"
+                : "capture-note--warning"
+            }`}
+          >
+            {resultText}
+          </div>
         )}
-
-        {/* Debug info (remove in production) */}
-        {!modelLoading && model && (
-          <p style={{ fontSize: 10, opacity: 0.5, marginTop: 20 }}>
-            Model: {model.type} | Labels: {labels.join(", ")} | Threshold: {MOON_THRESHOLD * 100}%
-          </p>
-        )}
+      </>
+    )}
       </div>
     </div>
   );
@@ -460,6 +527,111 @@ const INITIAL_CONTACTS = [
   { id: 3, name: "Stella Ray", initials: "SR", location: "Santa Fe, NM" },
 ];
 
+const LOCATION_OPTIONS = [
+  "New York, USA (UTC-5)",
+  "Los Angeles, USA (UTC-8)",
+  "Chicago, USA (UTC-6)",
+  "Miami, USA (UTC-5)",
+  "Toronto, Canada (UTC-5)",
+  "Vancouver, Canada (UTC-8)",
+  "Mexico City, Mexico (UTC-6)",
+  "Bogotá, Colombia (UTC-5)",
+  "Lima, Peru (UTC-5)",
+  "Santiago, Chile (UTC-4)",
+  "Buenos Aires, Argentina (UTC-3)",
+  "São Paulo, Brazil (UTC-3)",
+  "Reykjavík, Iceland (UTC+0)",
+  "Dublin, Ireland (UTC+0)",
+  "London, UK (UTC+0)",
+  "Lisbon, Portugal (UTC+0)",
+  "Madrid, Spain (UTC+1)",
+  "Paris, France (UTC+1)",
+  "Amsterdam, Netherlands (UTC+1)",
+  "Berlin, Germany (UTC+1)",
+  "Rome, Italy (UTC+1)",
+  "Prague, Czechia (UTC+1)",
+  "Vienna, Austria (UTC+1)",
+  "Warsaw, Poland (UTC+1)",
+  "Athens, Greece (UTC+2)",
+  "Cape Town, South Africa (UTC+2)",
+  "Johannesburg, South Africa (UTC+2)",
+  "Cairo, Egypt (UTC+2)",
+  "Nairobi, Kenya (UTC+3)",
+  "Istanbul, Türkiye (UTC+3)",
+  "Dubai, UAE (UTC+4)",
+  "Riyadh, Saudi Arabia (UTC+3)",
+  "Tehran, Iran (UTC+3)",
+  "Mumbai, India (UTC+5)",
+  "Delhi, India (UTC+5)",
+  "Karachi, Pakistan (UTC+5)",
+  "Dhaka, Bangladesh (UTC+6)",
+  "Bangkok, Thailand (UTC+7)",
+  "Jakarta, Indonesia (UTC+7)",
+  "Singapore (UTC+8)",
+  "Hong Kong (UTC+8)",
+  "Beijing, China (UTC+8)",
+  "Seoul, South Korea (UTC+9)",
+  "Tokyo, Japan (UTC+9)",
+  "Manila, Philippines (UTC+8)",
+  "Hanoi, Vietnam (UTC+7)",
+  "Auckland, New Zealand (UTC+12)",
+  "Sydney, Australia (UTC+10)",
+  "Melbourne, Australia (UTC+10)",
+  "Brisbane, Australia (UTC+10)",
+];
+
+const LOCATION_COORDS = {
+  "New York, USA": { lat: 40.7128, lon: -74.006 },
+  "Los Angeles, USA": { lat: 34.0522, lon: -118.2437 },
+  "Chicago, USA": { lat: 41.8781, lon: -87.6298 },
+  "Miami, USA": { lat: 25.7617, lon: -80.1918 },
+  "Toronto, Canada": { lat: 43.6532, lon: -79.3832 },
+  "Vancouver, Canada": { lat: 49.2827, lon: -123.1207 },
+  "Mexico City, Mexico": { lat: 19.4326, lon: -99.1332 },
+  "Bogotá, Colombia": { lat: 4.711, lon: -74.0721 },
+  "Lima, Peru": { lat: -12.0464, lon: -77.0428 },
+  "Santiago, Chile": { lat: -33.4489, lon: -70.6693 },
+  "Buenos Aires, Argentina": { lat: -34.6037, lon: -58.3816 },
+  "São Paulo, Brazil": { lat: -23.5505, lon: -46.6333 },
+  "Reykjavík, Iceland": { lat: 64.1466, lon: -21.9426 },
+  "Dublin, Ireland": { lat: 53.3498, lon: -6.2603 },
+  "London, UK": { lat: 51.5074, lon: -0.1278 },
+  "Lisbon, Portugal": { lat: 38.7223, lon: -9.1393 },
+  "Madrid, Spain": { lat: 40.4168, lon: -3.7038 },
+  "Paris, France": { lat: 48.8566, lon: 2.3522 },
+  "Amsterdam, Netherlands": { lat: 52.3676, lon: 4.9041 },
+  "Berlin, Germany": { lat: 52.52, lon: 13.405 },
+  "Rome, Italy": { lat: 41.9028, lon: 12.4964 },
+  "Prague, Czechia": { lat: 50.0755, lon: 14.4378 },
+  "Vienna, Austria": { lat: 48.2082, lon: 16.3738 },
+  "Warsaw, Poland": { lat: 52.2297, lon: 21.0122 },
+  "Athens, Greece": { lat: 37.9838, lon: 23.7275 },
+  "Cape Town, South Africa": { lat: -33.9249, lon: 18.4241 },
+  "Johannesburg, South Africa": { lat: -26.2041, lon: 28.0473 },
+  "Cairo, Egypt": { lat: 30.0444, lon: 31.2357 },
+  "Nairobi, Kenya": { lat: -1.2921, lon: 36.8219 },
+  "Istanbul, Türkiye": { lat: 41.0082, lon: 28.9784 },
+  "Dubai, UAE": { lat: 25.2048, lon: 55.2708 },
+  "Riyadh, Saudi Arabia": { lat: 24.7136, lon: 46.6753 },
+  "Tehran, Iran": { lat: 35.6892, lon: 51.389 },
+  "Mumbai, India": { lat: 19.076, lon: 72.8777 },
+  "Delhi, India": { lat: 28.6139, lon: 77.209 },
+  "Karachi, Pakistan": { lat: 24.8607, lon: 67.0011 },
+  "Dhaka, Bangladesh": { lat: 23.8103, lon: 90.4125 },
+  "Bangkok, Thailand": { lat: 13.7563, lon: 100.5018 },
+  "Jakarta, Indonesia": { lat: -6.2088, lon: 106.8456 },
+  "Singapore": { lat: 1.3521, lon: 103.8198 },
+  "Hong Kong": { lat: 22.3193, lon: 114.1694 },
+  "Beijing, China": { lat: 39.9042, lon: 116.4074 },
+  "Seoul, South Korea": { lat: 37.5665, lon: 126.978 },
+  "Tokyo, Japan": { lat: 35.6762, lon: 139.6503 },
+  "Manila, Philippines": { lat: 14.5995, lon: 120.9842 },
+  "Hanoi, Vietnam": { lat: 21.0278, lon: 105.8342 },
+  "Auckland, New Zealand": { lat: -36.8485, lon: 174.7633 },
+  "Sydney, Australia": { lat: -33.8688, lon: 151.2093 },
+  "Melbourne, Australia": { lat: -37.8136, lon: 144.9631 },
+  "Brisbane, Australia": { lat: -27.4698, lon: 153.0251 },
+};
 const MOON_PHASES = [
   {
     name: "New Moon",
@@ -531,6 +703,43 @@ const getLocationOffsetHours = (location = "") => {
   return Math.max(-12, Math.min(14, offset));
 };
 
+const getTimezoneOffsetHours = (timeZone, date = new Date()) => {
+  if (!timeZone) return 0;
+  try {
+    const local = new Date(date.toLocaleString("en-US", { timeZone }));
+    const utc = new Date(date.toLocaleString("en-US", { timeZone: "UTC" }));
+    return Math.round((local - utc) / MS_PER_HOUR);
+  } catch {
+    return 0;
+  }
+};
+
+const getLocationKey = (location = "") => location.split(" (")[0].trim();
+
+const getCoordsForLocation = (location = "") => {
+  const key = getLocationKey(location);
+  return LOCATION_COORDS[key] ?? null;
+};
+
+const getDistanceMiles = (fromLocation, toLocation, fromCoords, toCoords) => {
+  const from = fromCoords || getCoordsForLocation(fromLocation);
+  const to = toCoords || getCoordsForLocation(toLocation);
+  if (!from || !to) return null;
+
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(to.lat - from.lat);
+  const dLon = toRad(to.lon - from.lon);
+  const lat1 = toRad(from.lat);
+  const lat2 = toRad(to.lat);
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const km = 6371 * c;
+  return Math.round(km * 0.621371);
+};
+
 const formatFullDate = (date) =>
   date.toLocaleDateString("en-US", {
     month: "long",
@@ -587,32 +796,42 @@ const MoonIcon = ({ phase, size = 48 }) => {
 
 const BottomNav = ({ current, onSelect, onSend }) => (
   <div className="bottom-nav">
-    <div className="nav-line" />
-    <div className="nav-content">
+    <div className="nav-shell">
       <button
         className={`nav-item ${current === "inbox" ? "is-active" : ""}`}
         onClick={() => onSelect("inbox")}
       >
+        <span className="nav-emoji">🏠</span>
         <span className="nav-label">Home</span>
       </button>
       <button
-        className={`nav-item nav-item--primary ${current === "send" ? "is-active" : ""}`}
+        className={`nav-compose ${current === "send" ? "is-active" : ""}`}
         onClick={onSend}
       >
-        <span className="nav-icon-send">✦</span>
+        <span className="nav-emoji">✍️</span>
         <span className="nav-label">Compose</span>
       </button>
       <button
         className={`nav-item ${current === "gallery" ? "is-active" : ""}`}
         onClick={() => onSelect("gallery")}
       >
+        <span className="nav-emoji">🗂️</span>
         <span className="nav-label">Archive</span>
       </button>
     </div>
   </div>
 );
 
-const OnboardingScreen = ({ userData, onUpdate, onBegin }) => (
+const OnboardingScreen = ({
+  userData,
+  locationQuery,
+  locationSuggestions,
+  locationLoading,
+  onUpdate,
+  onLocationChange,
+  onSelectLocation,
+  onBegin,
+}) => (
   <div className="app-shell">
     <div className="onboarding-content">
       <div className="onboarding-header">
@@ -636,20 +855,45 @@ const OnboardingScreen = ({ userData, onUpdate, onBegin }) => (
           <label>Location</label>
           <input
             type="text"
-            value={userData.location}
-            onChange={(e) => onUpdate("location", e.target.value)}
+            value={locationQuery}
+            onChange={(e) => onLocationChange(e.target.value)}
+            onFocus={() => onLocationChange(locationQuery)}
           />
+          {locationSuggestions.length > 0 && (
+            <div className="location-suggestions">
+              {locationSuggestions.map((option) => (
+                <button
+                  key={`${option.label}-${option.timezone}`}
+                  className="location-option"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onSelectLocation(option);
+                  }}
+                >
+                  <span className="location-name">{option.label}</span>
+                  <span className="location-meta">{option.timezone}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {locationLoading && (
+            <p className="location-loading">Searching cities…</p>
+          )}
         </div>
       </div>
 
-      <button onClick={onBegin} className="btn-primary" disabled={!userData.name.trim()}>
+      <button
+        onClick={onBegin}
+        className="btn-primary"
+        disabled={!userData.name.trim() || !userData.location}
+      >
         Enter
       </button>
     </div>
   </div>
 );
 
-const InboxScreen = ({ userData, messages, currentPhase, onOpen }) => {
+const InboxScreen = ({ userData, messages, currentPhase, onOpen, onCompose, onLogout }) => {
   const incoming = messages.filter((msg) => msg.from !== "You");
   const pending = incoming.filter((msg) => (msg.locked || !msg.receivePhoto) && !msg.archived);
   const sent = messages.filter((msg) => msg.from === "You");
@@ -658,8 +902,11 @@ const InboxScreen = ({ userData, messages, currentPhase, onOpen }) => {
     <div className="app-shell">
       <div className="inbox-content">
         <header className="inbox-header">
-          <p className="date-display">{formatFullDate(new Date())}</p>
-          <h1 className="greeting">Good evening{userData.name ? `, ${userData.name}` : ""}</h1>
+          <div>
+            <p className="date-display">{formatFullDate(new Date())}</p>
+            <h1 className="greeting">Good evening{userData.name ? `, ${userData.name}` : ""}</h1>
+          </div>
+          <button onClick={onLogout} className="btn-ghost">Log out</button>
         </header>
 
         <div className="phase-card">
@@ -672,6 +919,10 @@ const InboxScreen = ({ userData, messages, currentPhase, onOpen }) => {
           </div>
           <p className="phase-message">{currentPhase.personalMessage}</p>
         </div>
+
+        <button onClick={onCompose} className="compose-callout">
+          Compose a letter
+        </button>
 
         <section className="message-section">
           <h2 className="section-title">Awaiting your moon</h2>
@@ -719,7 +970,6 @@ const InboxScreen = ({ userData, messages, currentPhase, onOpen }) => {
   );
 };
 
-// ✅ Type ANY recipient name; still shows the 3 as suggestions
 const SelectRecipientScreen = ({ suggestions, onSelect, onBack, defaultValue = "" }) => {
   const [name, setName] = useState(defaultValue);
 
@@ -753,7 +1003,7 @@ const SelectRecipientScreen = ({ suggestions, onSelect, onBack, defaultValue = "
           Continue →
         </button>
 
-        <div className="recipient-list">
+        <div className="recipient-list" style={{ marginTop: 32 }}>
           {suggestions.map((contact) => (
             <button
               key={contact.id}
@@ -843,8 +1093,8 @@ const PrintingScreen = ({ message, onComplete }) => {
     <div className="app-shell">
       <div className="printing-content">
         <div className="printing-text">
-          <h2>Revealing your letter</h2>
-          <p>The moonlight develops the message...</p>
+          <h2>Printing your letter</h2>
+          <p>Your moon printer is bringing it to paper...</p>
           <p style={{ marginTop: 12, opacity: 0.7, fontSize: 12 }}>
             From {message?.from}
           </p>
@@ -873,56 +1123,65 @@ const GalleryScreen = ({ messages, userName }) => {
           </div>
         ) : (
           <div className="gallery-list">
-            {galleryItems.map((msg) => (
-              <div key={msg.id} className="gallery-card">
-                <div className="gallery-from">
-                  {msg.location || "Unknown location"}
-                </div>
+            {galleryItems.map((msg) => {
+              const sendLocation = msg.sendPhoto?.location;
+              const receiveLocation = msg.receivePhoto?.location;
+              const distance = getDistanceMiles(
+                sendLocation,
+                receiveLocation,
+                msg.sendPhoto?.coords,
+                msg.receivePhoto?.coords
+              );
+              const locationLine =
+                sendLocation && receiveLocation
+                  ? `${sendLocation} ↔ ${receiveLocation}`
+                  : sendLocation || receiveLocation || "Location unavailable";
+              const senderName = msg.rawSender || msg.from;
+              const receiverName = msg.rawRecipient || msg.to;
 
-                <div className="gallery-moons">
-                  <div className="gallery-moon">
-                    <div
-                      className="moon-photo"
-                      style={{
-                        "--photo-hue": msg.sendPhoto?.hue ?? 210,
-                        "--photo-offset": msg.sendPhoto?.offset ?? 18,
-                      }}
-                    />
-                    <div className="moon-meta">
-                      <span className="moon-location">Send moon</span>
-                      <span className="moon-date">
-                        {formatShortDateTime(new Date(msg.sentAt))}
-                      </span>
+              return (
+                <div key={msg.id} className="gallery-card">
+                  <div className="gallery-from">{locationLine}</div>
+                  <p className="gallery-distance">
+                    {distance ? `${distance} miles apart` : "Distance unavailable"}
+                  </p>
+
+                  <div className="gallery-moons">
+                    <div className="gallery-moon">
+                      <div className="moon-photo">
+                        {msg.sendPhoto?.dataUrl && (
+                          <img src={msg.sendPhoto.dataUrl} alt="Send moon" />
+                        )}
+                      </div>
+                      <div className="moon-meta">
+                        <span className="moon-location">{senderName}</span>
+                        <span className="moon-date">
+                          Sent {formatShortDateTime(new Date(msg.sentAt))}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="gallery-connector">↔</div>
+
+                    <div className="gallery-moon">
+                      <div className="moon-photo">
+                        {msg.receivePhoto?.dataUrl && (
+                          <img src={msg.receivePhoto.dataUrl} alt="Receive moon" />
+                        )}
+                      </div>
+                      <div className="moon-meta">
+                        <span className="moon-location">{receiverName}</span>
+                        <span className="moon-date">
+                          {msg.receiveAt
+                            ? `Received ${formatShortDateTime(new Date(msg.receiveAt))}`
+                            : "Not yet received"}
+                        </span>
+                      </div>
                     </div>
                   </div>
-
-                  <div className="gallery-connector">↔</div>
-
-                  <div className="gallery-moon">
-                    <div
-                      className="moon-photo"
-                      style={{
-                        "--photo-hue": msg.receivePhoto?.hue ?? 240,
-                        "--photo-offset": msg.receivePhoto?.offset ?? 8,
-                      }}
-                    />
-                    <div className="moon-meta">
-                      <span className="moon-location">Receive moon</span>
-                      <span className="moon-date">
-                        {msg.receiveAt ? formatShortDateTime(new Date(msg.receiveAt)) : "—"}
-                      </span>
-                    </div>
-                  </div>
                 </div>
-
-                <div className="gallery-dates">
-                  <span>{formatShortDateTime(new Date(msg.sentAt))}</span>
-                  <span>
-                    {msg.receiveAt ? formatShortDateTime(new Date(msg.receiveAt)) : "—"}
-                  </span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -935,8 +1194,29 @@ const GalleryScreen = ({ messages, userName }) => {
  *  --------------------------*/
 
 const MoonCodeApp = () => {
-  const [route, setRoute] = useState("onboarding");
-  const [userData, setUserData] = useState({ name: "", location: "" });
+  const [userData, setUserData] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("mooncode_user") || "{}");
+      return {
+        name: stored.name || "",
+        location: stored.location || "",
+        locationData: stored.locationData || null,
+      };
+    } catch {
+      return { name: "", location: "", locationData: null };
+    }
+  });
+  const [route, setRoute] = useState(() => {
+    try {
+      const storedUser = JSON.parse(localStorage.getItem("mooncode_user") || "{}");
+      const storedRoute = localStorage.getItem("mooncode_route");
+      if (storedUser?.name) {
+        if (storedRoute && storedRoute !== "onboarding") return storedRoute;
+        return "inbox";
+      }
+    } catch {}
+    return "onboarding";
+  });
 
   const [messages, setMessages] = useState([]);
   const [activeMessage, setActiveMessage] = useState(null);
@@ -945,13 +1225,18 @@ const MoonCodeApp = () => {
   const [recipient, setRecipient] = useState(null);
   const [recipientDraft, setRecipientDraft] = useState("");
   const [messageText, setMessageText] = useState("");
+  const [locationQuery, setLocationQuery] = useState(userData.location || "");
+  const [locationSuggestions, setLocationSuggestions] = useState([]);
+  const [locationLoading, setLocationLoading] = useState(false);
 
   const currentPhase = useMemo(() => {
     const now = new Date();
-    const offsetHours = getLocationOffsetHours(userData.location);
+    const offsetHours = userData.locationData?.timezone
+      ? getTimezoneOffsetHours(userData.locationData.timezone, now)
+      : getLocationOffsetHours(userData.location);
     const adjusted = new Date(now.getTime() + offsetHours * MS_PER_HOUR);
     return getMoonPhase(adjusted);
-  }, [userData.location]);
+  }, [userData.location, userData.locationData]);
 
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)),
@@ -959,6 +1244,83 @@ const MoonCodeApp = () => {
   );
 
   const updateUserData = (field, value) => setUserData((p) => ({ ...p, [field]: value }));
+
+  const handleLocationInput = (value) => {
+    setLocationQuery(value);
+    if (value !== userData.location) {
+      setUserData((prev) => ({ ...prev, location: "", locationData: null }));
+    }
+  };
+
+  const handleSelectLocation = (option) => {
+    setUserData((prev) => ({
+      ...prev,
+      location: option.label,
+      locationData: {
+        label: option.label,
+        timezone: option.timezone,
+        lat: option.lat,
+        lon: option.lon,
+      },
+    }));
+    setLocationQuery(option.label);
+    setLocationSuggestions([]);
+  };
+
+  useEffect(() => {
+    localStorage.setItem("mooncode_user", JSON.stringify(userData));
+  }, [userData]);
+
+  useEffect(() => {
+    if (route) localStorage.setItem("mooncode_route", route);
+  }, [route]);
+
+  useEffect(() => {
+    setLocationQuery(userData.location || "");
+  }, [userData.location]);
+
+  useEffect(() => {
+    const query = locationQuery.trim();
+    if (query.length < 2) {
+      setLocationSuggestions([]);
+      setLocationLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setLocationLoading(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
+            query
+          )}&count=6&language=en&format=json`,
+          { signal: controller.signal }
+        );
+        const data = await response.json();
+        const results = data?.results || [];
+        const mapped = results.map((item) => ({
+          label: `${item.name}${item.admin1 ? `, ${item.admin1}` : ""}, ${item.country}`,
+          timezone: item.timezone,
+          lat: item.latitude,
+          lon: item.longitude,
+        }));
+        setLocationSuggestions(mapped);
+      } catch (e) {
+        if (e.name !== "AbortError") {
+          setLocationSuggestions([]);
+        }
+      } finally {
+        setLocationLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [locationQuery]);
 
   // Load + realtime subscribe
   useEffect(() => {
@@ -1048,10 +1410,16 @@ const MoonCodeApp = () => {
   const handleOpenMessage = (msg) => {
     if (!msg) return;
     setActiveMessage(msg);
-    if (msg.locked || !msg.receivePhoto) setRoute("unlockCapture");
+    if (msg.locked || !msg.receivePhoto) {
+      setRoute("unlockCapture");
+    } else {
+      setRoute("printing");
+    }
   };
 
-  const handlePrintingComplete = () => setRoute("inbox");
+  const handlePrintingComplete = () => {
+    setRoute("inbox");
+  };
 
   const showNav = ["inbox", "compose", "gallery", "selectRecipient"].includes(route);
 
@@ -1061,6 +1429,11 @@ const MoonCodeApp = () => {
         <OnboardingScreen
           userData={userData}
           onUpdate={updateUserData}
+          locationQuery={locationQuery}
+          locationSuggestions={locationSuggestions}
+          locationLoading={locationLoading}
+          onLocationChange={handleLocationInput}
+          onSelectLocation={handleSelectLocation}
           onBegin={() => setRoute("inbox")}
         />
       )}
@@ -1071,6 +1444,15 @@ const MoonCodeApp = () => {
           messages={sortedMessages}
           currentPhase={currentPhase}
           onOpen={handleOpenMessage}
+          onCompose={handleStartSend}
+          onLogout={() => {
+            localStorage.removeItem("mooncode_user");
+            localStorage.removeItem("mooncode_route");
+            setUserData({ name: "", location: "", locationData: null });
+            setLocationQuery("");
+            setLocationSuggestions([]);
+            setRoute("onboarding");
+          }}
         />
       )}
 
@@ -1078,8 +1460,11 @@ const MoonCodeApp = () => {
         <MoonCameraCapture
           title="Capture your moon"
           subtitle="Seal your letter with tonight's light"
+          locationLabel={userData.location}
+          locationCoords={userData.locationData}
           onBack={() => setRoute("inbox")}
           onVerifiedMoon={(capture) => {
+            console.log("✅ Moon verified for sending:", capture);
             setSendPhoto(capture);
             setRoute("selectRecipient");
           }}
@@ -1113,8 +1498,11 @@ const MoonCodeApp = () => {
         <MoonCameraCapture
           title="Capture to unlock"
           subtitle="Your moon will reveal this letter"
+          locationLabel={userData.location}
+          locationCoords={userData.locationData}
           onBack={() => setRoute("inbox")}
           onVerifiedMoon={(capture) => {
+            console.log("✅ Moon verified for unlocking:", capture);
             (async () => {
               try {
                 const row = await unlockMessage({
