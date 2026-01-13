@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import "./index.css";
 import { supabase } from "./supabaseClient";
+import lastQuarterImg from "./assets/last_quarter.png";
+import waningCrescentImg from "./assets/waning_crescent.png";
 
 /** ---------------------------
  *  Helpers: Supabase I/O
@@ -85,6 +87,26 @@ function showSupabaseError(e, fallback = "Supabase error") {
     (typeof e === "string" ? e : null) ||
     fallback;
   alert(msg);
+}
+
+function getGreetingForTimeZone(timeZone) {
+  try {
+    const hourStr = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "2-digit",
+      hour12: false,
+    }).format(new Date());
+
+    const hour = Number(hourStr);
+    if (Number.isNaN(hour)) return "Good evening";
+
+    if (hour >= 5 && hour < 12) return "Good morning";
+    if (hour >= 12 && hour < 17) return "Good afternoon";
+    if (hour >= 17 && hour < 21) return "Good evening";
+    return "Good night";
+  } catch {
+    return "Good evening";
+  }
 }
 
 /** ---------------------------
@@ -758,6 +780,32 @@ const formatShortDateTime = (date) =>
 /** ---------------------------
  *  UI Components
  *  --------------------------*/
+function moonPhaseValueToIndex(v) {
+  // Open-Meteo daily.moon_phase is typically 0..1 (0=new, 0.5=full, 1=new)
+  // Map to 8-phase index
+  const phaseIndex = Math.floor(((v % 1) * 8) + 0.5) % 8;
+  return phaseIndex;
+}
+
+async function fetchMoonPhaseFromApiUTC({ lat, lon }) {
+  // We force UTC so everyone uses the same “today”
+  const url =
+    `https://api.open-meteo.com/v1/forecast` +
+    `?latitude=${encodeURIComponent(lat)}` +
+    `&longitude=${encodeURIComponent(lon)}` +
+    `&daily=moon_phase` +
+    `&timezone=UTC`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Moon API failed: ${res.status}`);
+  const json = await res.json();
+
+  const v = json?.daily?.moon_phase?.[0];
+  if (typeof v !== "number") throw new Error("Moon API: missing daily.moon_phase[0]");
+
+  const idx = moonPhaseValueToIndex(v);
+  return MOON_PHASES[idx];
+}
 
 const MoonIcon = ({ phase, size = 48 }) => {
   const phaseIndex = MOON_PHASES.findIndex((p) => p.name === phase?.name) || 0;
@@ -893,10 +941,42 @@ const OnboardingScreen = ({
   </div>
 );
 
+function MoonPhaseHero({ phase }) {
+  const name = phase?.name || "";
+
+  // Only override for the two phases you provided
+  if (name === "Last Quarter") {
+    return (
+      <img
+        src={lastQuarterImg}
+        alt="Last Quarter moon"
+        className="phase-hero-img"
+      />
+    );
+  }
+
+  if (name === "Waning Crescent") {
+    return (
+      <img
+        src={waningCrescentImg}
+        alt="Waning Crescent moon"
+        className="phase-hero-img"
+      />
+    );
+  }
+
+  // Fallback to your existing SVG moon
+  return <MoonIcon phase={phase} size={64} />;
+}
+
 const InboxScreen = ({ userData, messages, currentPhase, onOpen, onCompose, onLogout }) => {
   const incoming = messages.filter((msg) => msg.from !== "You");
   const pending = incoming.filter((msg) => (msg.locked || !msg.receivePhoto) && !msg.archived);
   const sent = messages.filter((msg) => msg.from === "You");
+
+  const greeting = getGreetingForTimeZone(
+    userData.locationData?.timezone
+  );
 
   return (
     <div className="app-shell">
@@ -904,14 +984,17 @@ const InboxScreen = ({ userData, messages, currentPhase, onOpen, onCompose, onLo
         <header className="inbox-header">
           <div>
             <p className="date-display">{formatFullDate(new Date())}</p>
-            <h1 className="greeting">Good evening{userData.name ? `, ${userData.name}` : ""}</h1>
+            <h1 className="greeting">
+  {greeting}
+  {userData.name ? `, ${userData.name}` : ""}
+</h1>
           </div>
           <button onClick={onLogout} className="btn-ghost">Log out</button>
         </header>
 
         <div className="phase-card">
           <div className="phase-visual">
-            <MoonIcon phase={currentPhase} size={64} />
+            <MoonPhaseHero phase={currentPhase} />
           </div>
           <div className="phase-info">
             <p className="phase-name">{currentPhase.name}</p>
@@ -920,9 +1003,9 @@ const InboxScreen = ({ userData, messages, currentPhase, onOpen, onCompose, onLo
           <p className="phase-message">{currentPhase.personalMessage}</p>
         </div>
 
-        <button onClick={onCompose} className="compose-callout">
+        {/* <button onClick={onCompose} className="compose-callout">
           Compose a letter
-        </button>
+        </button> */}
 
         <section className="message-section">
           <h2 className="section-title">Awaiting your moon</h2>
@@ -1229,14 +1312,36 @@ const MoonCodeApp = () => {
   const [locationSuggestions, setLocationSuggestions] = useState([]);
   const [locationLoading, setLocationLoading] = useState(false);
 
-  const currentPhase = useMemo(() => {
-    const now = new Date();
-    const offsetHours = userData.locationData?.timezone
-      ? getTimezoneOffsetHours(userData.locationData.timezone, now)
-      : getLocationOffsetHours(userData.location);
-    const adjusted = new Date(now.getTime() + offsetHours * MS_PER_HOUR);
-    return getMoonPhase(adjusted);
-  }, [userData.location, userData.locationData]);
+  const [currentPhase, setCurrentPhase] = useState(() => getMoonPhase(new Date()));
+
+useEffect(() => {
+  // pick best available coords (from geocoding)
+  const lat = userData.locationData?.lat;
+  const lon = userData.locationData?.lon;
+
+  if (!lat || !lon) {
+    // fallback to local calc if no coords yet
+    setCurrentPhase(getMoonPhase(new Date()));
+    return;
+  }
+
+  let alive = true;
+
+  fetchMoonPhaseFromApiUTC({ lat, lon })
+    .then((phase) => {
+      if (!alive) return;
+      setCurrentPhase(phase);
+    })
+    .catch((e) => {
+      console.warn("Moon API failed, using fallback calc:", e);
+      if (!alive) return;
+      setCurrentPhase(getMoonPhase(new Date()));
+    });
+
+  return () => {
+    alive = false;
+  };
+}, [userData.locationData?.lat, userData.locationData?.lon]);
 
   const sortedMessages = useMemo(
     () => [...messages].sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)),
