@@ -682,56 +682,56 @@ const MOON_PHASES = [
     name: "New Moon",
     meaning: "beginnings",
     personalMessage:
-      "Tonight the sky holds its breath. This is your moment to plant seeds in the dark—wishes, intentions, quiet promises to yourself. What you begin now grows in secret.",
+      "This is the quiet-start phase—blank page energy. Write the letter you’ve been avoiding because it would make things real. Begin with: “I’ve been meaning to tell you…” Focus on intention, honesty, and what you want to grow between you. Keep it simple, sincere, and unpolished.",
     image: null,
   },
   {
     name: "Waxing Crescent",
     meaning: "intentions",
     personalMessage:
-      "A sliver of light emerges. Your intentions are taking their first breath. Stay gentle with your hopes—they are young and tender, like new leaves reaching toward warmth.",
+      "Hope is showing up in small, stubborn ways. Write to someone you miss, but keep it gentle—no dramatic plot twists. Share one specific memory, one small update about your life, and one wish for them. Tone: tender, curious, a little shy. Let the letter feel like leaning closer, not lunging.",
     image: null,
   },
   {
     name: "First Quarter",
     meaning: "decisions",
     personalMessage:
-      "Half-lit, half-shadowed. You stand at a crossroads tonight. The universe asks you to choose, to commit. Trust the direction your heart leans.",
+      "This phase is all nerve and momentum—half sure, half terrified. Write the letter that makes a decision: an apology, a boundary, a confession, a yes, a no. Use clear sentences. Name the truth without over-explaining it. If your hands feel shaky, you’re probably writing the right thing.",
     image: null,
   },
   {
     name: "Waxing Gibbous",
     meaning: "refinement",
     personalMessage:
-      "Almost full, almost there. This is the time to adjust, to polish, to tend carefully to what you've been building. Patience—the bloom is near.",
+      "You’re close to saying what you mean—this is the edit phase. Write a letter that clarifies: what you appreciate, what you misunderstood, what you’re learning. Add details (a place, a scent, a line they said). The emotion here is earnest effort: you’re trying, on purpose.",
     image: null,
   },
   {
     name: "Full Moon",
     meaning: "culmination",
     personalMessage:
-      "The moon shows her whole face tonight. Everything is illuminated—your work, your heart, your truth. Let yourself be seen. Celebrate how far you've traveled.",
+      "Everything’s loud and glowing—feelings have stage lighting. Write the big letter: gratitude, love, awe, pride, grief—whatever has been building. Don’t be cool. Be precise. Tell them what they changed in you. Let the message be brave enough to be seen.",
     image: null,
   },
   {
     name: "Waning Gibbous",
     meaning: "gratitude",
     personalMessage:
-      "The light begins its retreat. Take this moment to give thanks—for lessons learned, for love received, for the fullness that was. Gratitude softens the release.",
+      "This is the afterglow phase—soft, reflective, warm. Write a letter that says thank you without turning it into a speech. Mention one thing they did, one way it mattered, and one thing you’re carrying forward. Emotion: appreciation with a little sweetness, like leaving the porch light on.",
     image: null,
   },
   {
     name: "Last Quarter",
     meaning: "release",
     personalMessage:
-      "Half the light has faded. What no longer serves you? This is your permission to let go—of old stories, of heavy things, of what has run its course.",
+      "This is the exhale phase—clean cuts, closure, clearing. Write the letter you may never send: to an old version of you, to someone who hurt you, to something you’re done holding. Say what you’re releasing and what you’re keeping. Emotion: relief, honesty, finality with tenderness.",
     image: lastQuarterImg,
   },
   {
     name: "Waning Crescent",
     meaning: "rest",
     personalMessage:
-      "The thinnest crescent whispers: rest now. Retreat inward. Dream deeply. The darkness before renewal is not emptiness—it is preparation.",
+      "Low battery, high intuition. Write a quiet letter—short, gentle, almost like a whisper. Check in with someone who feels safe. Focus on softness: “Here’s what I’m tired of,” “Here’s what I need,” “Here’s what can wait.”",
     image: waningCrescentImg,
   },
 ];
@@ -883,6 +883,7 @@ const BottomNav = ({ current, onSelect, onSend }) => (
         onClick={onSend}
         aria-label="Compose"
         title="Compose"
+          style={{ transform: "translateY(50px)" }}   // <-- ADD THIS
       >
         <span className="nav-emoji">✍️</span>
       </button>

@@ -200,8 +200,9 @@ h1, h2, .letter-name {
   background: none;
   border: none;
   cursor: pointer;
-  margin-top: calc(-1 * (var(--nav-compose) / 2 + 44px)); /* Moved up more (was 30px) */
-  z-index: 3;
+  margin-top: 0;
+  z-index: 9999;
+  transform: translateY(24px);
 }
 
 .nav-compose .nav-emoji {
