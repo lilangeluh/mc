@@ -202,7 +202,7 @@ h1, h2, .letter-name {
   cursor: pointer;
   margin-top: 0;
   z-index: 9999;
-  transform: translateY(24px);
+  transform: translateY(-24px);
 }
 
 .nav-compose .nav-emoji {
