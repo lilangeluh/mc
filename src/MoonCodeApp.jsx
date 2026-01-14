@@ -883,7 +883,6 @@ const BottomNav = ({ current, onSelect, onSend }) => (
         onClick={onSend}
         aria-label="Compose"
         title="Compose"
-          style={{ transform: "translateY(50px)" }}   // <-- ADD THIS
       >
         <span className="nav-emoji">✍️</span>
       </button>
