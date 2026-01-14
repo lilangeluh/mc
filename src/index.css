@@ -129,8 +129,8 @@ h1, h2, .letter-name {
   grid-template-columns: 1fr auto 1fr;
   align-items: end;
   gap: 12px;
-  min-height: 86px;
-  padding: 24px 24px 16px;
+  min-height: 62px;
+  padding: 10px 22px 8px;
   background: transparent;
   border-radius: 0;
   box-shadow: none;
