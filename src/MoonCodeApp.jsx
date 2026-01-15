@@ -5,6 +5,10 @@ import { supabase } from "./supabaseClient";
 // Import moon phase images from assets
 import lastQuarterImg from "./assets/last_quarter.png";
 import waningCrescentImg from "./assets/waning_crescent.png";
+import logoSvg from "./assets/logo.png";
+import homeIcon from "./assets/home.png";
+import archiveIcon from "./assets/archive.png";
+import composeIcon from "./assets/compose.png";
 
 /** ---------------------------
  *  Helpers: Supabase I/O
@@ -874,24 +878,26 @@ const BottomNav = ({ current, onSelect, onSend }) => (
         className={`nav-item ${current === "inbox" ? "is-active" : ""}`}
         onClick={() => onSelect("inbox")}
       >
-        <span className="nav-emoji">🏠</span>
+        <img src={homeIcon} alt="Home" className="nav-icon" />
         <span className="nav-label">Home</span>
       </button>
 
       <button
-        className={`nav-compose ${current === "send" ? "is-active" : ""}`}
-        onClick={onSend}
-        aria-label="Compose"
-        title="Compose"
-      >
-        <span className="nav-emoji">✍️</span>
-      </button>
+  className={`nav-compose ${current === "send" ? "is-active" : ""}`}
+  onClick={onSend}
+  aria-label="Compose"
+  title="Compose"
+>
+  <span className="nav-compose-circle">
+    <img src={composeIcon} alt="Compose" className="nav-icon--compose" />
+  </span>
+</button>
 
       <button
         className={`nav-item ${current === "gallery" ? "is-active" : ""}`}
         onClick={() => onSelect("gallery")}
       >
-        <span className="nav-emoji">🗂️</span>
+        <img src={archiveIcon} alt="Archive" className="nav-icon" />
         <span className="nav-label">Archive</span>
       </button>
     </div>
@@ -911,9 +917,12 @@ const OnboardingScreen = ({
   <div className="app-shell">
     <div className="onboarding-content">
       <div className="onboarding-header">
-        <div className="logo-circle">
+        {/* <div className="logo-circle">
           <MoonIcon phase={MOON_PHASES[4]} size={40} />
-        </div>
+        </div> */}
+        <div className="logo-circle">
+  <img src={logoSvg} alt="Mooncode logo" className="logo-img" />
+</div>
         <h1 className="logo-text">Mooncode</h1>
         <p className="tagline">Letters sealed by moonlight</p>
       </div>
