@@ -687,7 +687,7 @@ const MOON_PHASES = [
     meaning: "beginnings",
     personalMessage:
       "This is the quiet-start phase—blank page energy. Write the letter you’ve been avoiding because it would make things real. Begin with: “I’ve been meaning to tell you…” Focus on intention, honesty, and what you want to grow between you. Keep it simple, sincere, and unpolished.",
-    image: null,
+    image: lastQuarterImg,
   },
   {
     name: "Waxing Crescent",
