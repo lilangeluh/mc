@@ -630,8 +630,10 @@ h1, h2, .letter-name {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 48px 32px;
+  justify-content: flex-start;
+  padding: clamp(44px, 9vh, 84px) 24px 140px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   position: relative;
   z-index: 1;
 }

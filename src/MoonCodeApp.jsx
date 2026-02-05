@@ -5,6 +5,7 @@ import { supabase } from "./supabaseClient";
 // Import moon phase images from assets
 import lastQuarterImg from "./assets/last_quarter.png";
 import waningCrescentImg from "./assets/waning_crescent.png";
+import waningGibbousImg from "./assets/waning_gibbous.png";
 import logoSvg from "./assets/logo.png";
 import homeIcon from "./assets/home.png";
 import archiveIcon from "./assets/archive.png";
@@ -242,8 +243,9 @@ function MoonCameraCapture({
         const mediaStream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: "environment" },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
+            width: { ideal: 720 },
+            height: { ideal: 1280 },
+            aspectRatio: { ideal: 3 / 4 },
           },
           audio: false,
         });
@@ -474,7 +476,10 @@ function MoonCameraCapture({
 
         {/* Camera / captured image */}
         {!hasError && (
-          <div className="capture-frame" style={{ width: "100%", maxWidth: 420 }}>
+          <div
+            className="capture-frame"
+            style={{ width: "100%", maxWidth: 340, aspectRatio: "3 / 4", height: "auto" }}
+          >
             <div className="capture-inner" style={{ padding: 0, position: "relative" }}>
               {!capturedDataUrl ? (
                 <>
@@ -485,6 +490,8 @@ function MoonCameraCapture({
                     autoPlay
                     style={{
                       width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
                       borderRadius: 16,
                       background: "#0a0a0f",
                       display: "block",
@@ -508,7 +515,13 @@ function MoonCameraCapture({
                 <img
                   src={capturedDataUrl}
                   alt="Captured"
-                  style={{ width: "100%", borderRadius: 16, display: "block" }}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                    borderRadius: 16,
+                    display: "block",
+                  }}
                 />
               )}
               <canvas ref={canvasRef} style={{ display: "none" }} />
@@ -722,7 +735,7 @@ const MOON_PHASES = [
     meaning: "gratitude",
     personalMessage:
       "This is the afterglow phase—soft, reflective, warm. Write a letter that says thank you without turning it into a speech. Mention one thing they did, one way it mattered, and one thing you’re carrying forward. Emotion: appreciation with a little sweetness, like leaving the porch light on.",
-    image: null,
+    image: waningGibbousImg,
   },
   {
     name: "Last Quarter",
