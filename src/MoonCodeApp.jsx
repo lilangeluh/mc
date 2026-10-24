@@ -1,15 +1,8 @@
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, { useEffect, useId, useMemo, useState, useRef } from "react";
 import "./index.css";
 import { supabase } from "./supabaseClient";
 
-// Import moon phase images from assets
-import lastQuarterImg from "./assets/last_quarter.png";
-import waningCrescentImg from "./assets/waning_crescent.png";
-import waningGibbousImg from "./assets/waning_gibbous.png";
-import logoSvg from "./assets/logo.png";
-import homeIcon from "./assets/home.png";
-import archiveIcon from "./assets/archive.png";
-import composeIcon from "./assets/compose.png";
+import moonMapUrl from "./assets/moon_map.jpg";
 
 /** ---------------------------
  *  Helpers: Supabase I/O
@@ -87,6 +80,10 @@ function mapRowToMessage(row, viewerName) {
 
 function showSupabaseError(e, fallback = "Supabase error") {
   console.error(e);
+  if (e instanceof TypeError || /failed to fetch|load failed|network/i.test(e?.message || "")) {
+    alert("Couldn't reach the mailbox. The Supabase project may be paused — restore it from the Supabase dashboard.");
+    return;
+  }
   const msg =
     e?.message ||
     e?.error_description ||
@@ -142,6 +139,7 @@ function MoonCameraCapture({
   onBack,
   locationLabel,
   locationCoords,
+  step,
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -158,6 +156,7 @@ function MoonCameraCapture({
   const [capturedDataUrl, setCapturedDataUrl] = useState(null);
   const [verifying, setVerifying] = useState(false);
   const [resultText, setResultText] = useState("");
+  const [resultTone, setResultTone] = useState("neutral");
   const [restartToken, setRestartToken] = useState(0);
 
   // 1. Load Teachable Machine model
@@ -368,7 +367,8 @@ function MoonCameraCapture({
     }
 
     setVerifying(true);
-    setResultText("Analyzing image...");
+    setResultTone("neutral");
+    setResultText("Reading the light…");
 
     try {
       let predictions;
@@ -409,9 +409,8 @@ function MoonCameraCapture({
       console.log(`🌙 Moon confidence: ${Math.round(moonProb * 100)}%`);
 
       if (moonProb >= MOON_THRESHOLD) {
-        setResultText(
-          `✦ Moon verified! (${Math.round(moonProb * 100)}% confidence)`
-        );
+        setResultTone("success");
+        setResultText(`Moon verified · ${Math.round(moonProb * 100)}% confidence`);
 
         // Small delay to show success message before proceeding
         setTimeout(() => {
@@ -427,14 +426,16 @@ function MoonCameraCapture({
         const notMoonPred = predictions.find(
           (p) => p.className.toLowerCase() !== MOON_CLASS_NAME.toLowerCase()
         );
+        setResultTone("warning");
         setResultText(
-          `Not a moon (${Math.round(moonProb * 100)}% moon, ${Math.round(
+          `No moon found · ${Math.round(moonProb * 100)}% moon, ${Math.round(
             (notMoonPred?.probability || 0) * 100
-          )}% not moon). Try pointing at the moon!`
+          )}% not. Aim at the moon and retake.`
         );
       }
     } catch (e) {
       console.error("❌ Verification error:", e);
+      setResultTone("warning");
       setResultText(`Verification failed: ${e.message}`);
     } finally {
       setVerifying(false);
@@ -444,140 +445,87 @@ function MoonCameraCapture({
   // Render
   const hasError = cameraError || modelError;
   const isReady = !modelLoading && cameraReady && !hasError;
+  const verified = resultTone === "success";
+
+  const lensNote = !capturedDataUrl && !cameraReady ? "Opening the lens…" : "";
 
   return (
-    <div className="app-shell">
-      <div className="capture-content">
-        {onBack && (
-          <button onClick={onBack} className="back-btn">
-            ← Back
-          </button>
-        )}
+    <div className="app-shell capture">
+      <TopBar onBack={onBack} step={step} dark />
 
-        <div className="capture-text">
-          <h2>{title}</h2>
-          <p>{subtitle}</p>
+      <header className="capture-title">
+        <h2 className="display">{title}</h2>
+        <p className="mono-label">{subtitle}</p>
+      </header>
+
+      {hasError ? (
+        <div className="capture-error">
+          <p className="mono-label">{modelError ? "Model error" : "Camera error"}</p>
+          <p>{modelError || cameraError}</p>
+          {cameraError && (
+            <button className="btn btn--ghost-dark" onClick={retake}>
+              Try again
+            </button>
+          )}
         </div>
-
-        {/* Error states */}
-        {modelError && (
-          <div className="empty-state" style={{ color: "#ff6b6b" }}>
-            <p>⚠️ Model Error</p>
-            <p style={{ fontSize: 12, opacity: 0.8 }}>{modelError}</p>
+      ) : (
+        <div
+          className={`viewport ${verifying ? "is-scanning" : ""} ${verified ? "is-locked" : ""} ${
+            capturedDataUrl ? "has-shot" : ""
+          }`}
+        >
+          <TickRing />
+          <div className="viewport-lens">
+            {!capturedDataUrl ? (
+              <video ref={videoRef} playsInline muted autoPlay />
+            ) : (
+              <img src={capturedDataUrl} alt="Captured moon" />
+            )}
+            {lensNote && <span className="viewport-note mono-label">{lensNote}</span>}
           </div>
-        )}
+          <canvas ref={canvasRef} style={{ display: "none" }} />
+        </div>
+      )}
 
-        {cameraError && (
-          <div className="empty-state" style={{ color: "#ff6b6b" }}>
-            <p>📷 Camera Error</p>
-            <p style={{ fontSize: 12, opacity: 0.8 }}>{cameraError}</p>
-          </div>
-        )}
+      {!hasError && (
+        <>
+          <p className={`capture-status capture-status--${resultText ? resultTone : "neutral"}`}>
+            {resultText ||
+              (modelLoading
+                ? "Loading moon detection…"
+                : capturedDataUrl
+                ? "Verify to seal with this moon"
+                : "Centre the moon inside the circle")}
+          </p>
 
-        {/* Camera / captured image */}
-        {!hasError && (
-          <div
-            className="capture-frame"
-            style={{ width: "100%", maxWidth: 340, aspectRatio: "3 / 4", height: "auto" }}
-          >
-            <div className="capture-inner" style={{ padding: 0, position: "relative" }}>
-              {!capturedDataUrl ? (
-                <>
-                  <video
-                    ref={videoRef}
-                    playsInline
-                    muted
-                    autoPlay
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "cover",
-                      borderRadius: 16,
-                      background: "#0a0a0f",
-                      display: "block",
-                    }}
-                  />
-                  {!cameraReady && (
-                    <div
-                      style={{
-                        position: "absolute",
-                        top: "50%",
-                        left: "50%",
-                        transform: "translate(-50%, -50%)",
-                        color: "#888",
-                      }}
-                    >
-                      Starting camera...
-                    </div>
-                  )}
-                </>
-              ) : (
-                <img
-                  src={capturedDataUrl}
-                  alt="Captured"
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    objectFit: "cover",
-                    borderRadius: 16,
-                    display: "block",
-                  }}
-                />
-              )}
-              <canvas ref={canvasRef} style={{ display: "none" }} />
-            </div>
-          </div>
-        )}
-
-        {/* Loading indicator */}
-        {modelLoading && !hasError && (
-          <p className="capture-instruction">Loading moon detection model…</p>
-        )}
-
-        {/* Controls */}
-        {!hasError && (
-          <>
+          <div className="capture-controls">
             {!capturedDataUrl ? (
               <button
                 onClick={takePhoto}
-                className="btn-capture"
+                className="shutter"
                 disabled={!isReady}
+                aria-label="Take photo"
                 title={isReady ? "Take photo" : "Waiting for camera and model..."}
               >
-                <span className="capture-circle" />
+                <span />
               </button>
             ) : (
-              <div style={{ display: "flex", gap: 12, width: "100%", maxWidth: 420 }}>
-                <button onClick={retake} className="btn-send" style={{ flex: 1 }}>
+              <>
+                <button onClick={retake} className="btn btn--ghost-dark" disabled={verifying || verified}>
                   Retake
                 </button>
                 <button
                   onClick={verifyMoon}
-                  className="btn-send"
-                  style={{ flex: 1 }}
-                  disabled={verifying || modelLoading}
+                  className="btn btn--light"
+                  disabled={verifying || modelLoading || verified}
                 >
-                  {verifying ? "Checking…" : "Verify Moon"}
+                  {verifying ? "Checking…" : verified ? "Verified" : "Verify moon"}
                 </button>
-              </div>
+              </>
             )}
-
-            {resultText && (
-              <div
-                className={`capture-note ${
-                  resultText.includes("verified")
-                    ? "capture-note--success"
-                    : resultText.includes("Analyzing")
-                    ? "capture-note--neutral"
-                    : "capture-note--warning"
-                }`}
-              >
-                {resultText}
-              </div>
-            )}
-          </>
-        )}
-      </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -585,8 +533,6 @@ function MoonCameraCapture({
 /** ---------------------------
  *  Moon phase utilities
  *  --------------------------*/
-
-const INITIAL_CONTACTS = [];
 
 const LOCATION_OPTIONS = [
   "New York, USA (UTC-5)",
@@ -699,57 +645,49 @@ const MOON_PHASES = [
     name: "New Moon",
     meaning: "beginnings",
     personalMessage:
-      "This is the quiet-start phase—blank page energy. Write the letter you’ve been avoiding because it would make things real. Begin with: “I’ve been meaning to tell you…” Focus on intention, honesty, and what you want to grow between you. Keep it simple, sincere, and unpolished.",
-    image: lastQuarterImg,
+      "Blank page energy. Write the letter you’ve been avoiding. Begin with “I’ve been meaning to tell you…”",
   },
   {
     name: "Waxing Crescent",
     meaning: "intentions",
     personalMessage:
-      "Hope is showing up in small, stubborn ways. Write to someone you miss, but keep it gentle—no dramatic plot twists. Share one specific memory, one small update about your life, and one wish for them. Tone: tender, curious, a little shy. Let the letter feel like leaning closer, not lunging.",
-    image: null,
+      "Hope in small, stubborn ways. Write to someone you miss: one memory, one update, one wish.",
   },
   {
     name: "First Quarter",
     meaning: "decisions",
     personalMessage:
-      "This phase is all nerve and momentum—half sure, half terrified. Write the letter that makes a decision: an apology, a boundary, a confession, a yes, a no. Use clear sentences. Name the truth without over-explaining it. If your hands feel shaky, you’re probably writing the right thing.",
-    image: null,
+      "Half sure, half terrified. Write the letter that decides: an apology, a confession, a yes.",
   },
   {
     name: "Waxing Gibbous",
     meaning: "refinement",
     personalMessage:
-      "You’re close to saying what you mean—this is the edit phase. Write a letter that clarifies: what you appreciate, what you misunderstood, what you’re learning. Add details (a place, a scent, a line they said). The emotion here is earnest effort: you’re trying, on purpose.",
-    image: null,
+      "You’re close to saying what you mean. Write what you appreciate, and what you’re learning.",
   },
   {
     name: "Full Moon",
     meaning: "culmination",
     personalMessage:
-      "Everything’s loud and glowing—feelings have stage lighting. Write the big letter: gratitude, love, awe, pride, grief—whatever has been building. Don’t be cool. Be precise. Tell them what they changed in you. Let the message be brave enough to be seen.",
-    image: null,
+      "Feelings have stage lighting. Write the big letter. Don’t be cool—tell them what they changed in you.",
   },
   {
     name: "Waning Gibbous",
     meaning: "gratitude",
     personalMessage:
-      "This is the afterglow phase—soft, reflective, warm. Write a letter that says thank you without turning it into a speech. Mention one thing they did, one way it mattered, and one thing you’re carrying forward. Emotion: appreciation with a little sweetness, like leaving the porch light on.",
-    image: waningGibbousImg,
+      "Soft afterglow. Say thank you: one thing they did, and why it mattered.",
   },
   {
     name: "Last Quarter",
     meaning: "release",
     personalMessage:
-      "This is the exhale phase—clean cuts, closure, clearing. Write the letter you may never send: to an old version of you, to someone who hurt you, to something you’re done holding. Say what you’re releasing and what you’re keeping. Emotion: relief, honesty, finality with tenderness.",
-    image: lastQuarterImg,
+      "The exhale. Write to something you’re done holding. Name what you release, and what you keep.",
   },
   {
     name: "Waning Crescent",
     meaning: "rest",
     personalMessage:
-      "Low battery, high intuition. Write a quiet letter—short, gentle, almost like a whisper. Check in with someone who feels safe. Focus on softness: “Here’s what I’m tired of,” “Here’s what I need,” “Here’s what can wait.”",
-    image: waningCrescentImg,
+      "Low battery, high intuition. Write something short and gentle, almost a whisper.",
   },
 ];
 
@@ -760,11 +698,19 @@ const KNOWN_NEW_MOON = new Date(Date.UTC(2000, 0, 6, 18, 14, 0));
 
 // Fallback local calculation (used if API fails)
 const getMoonPhaseLocal = (date) => {
-  const daysSince = (date - KNOWN_NEW_MOON) / MS_PER_DAY;
-  const ageDays = ((daysSince % SYNODIC_MONTH) + SYNODIC_MONTH) % SYNODIC_MONTH;
-  const phaseIndex = Math.floor((ageDays / SYNODIC_MONTH) * 8 + 0.5) % 8;
+  const { fraction } = getMoonInfo(date);
+  const phaseIndex = Math.floor(fraction * 8 + 0.5) % 8;
   return MOON_PHASES[phaseIndex];
 };
+
+// Age (days), cycle fraction (0 = new, 0.5 = full) and lit share of the disc
+function getMoonInfo(date) {
+  const daysSince = (date - KNOWN_NEW_MOON) / MS_PER_DAY;
+  const age = ((daysSince % SYNODIC_MONTH) + SYNODIC_MONTH) % SYNODIC_MONTH;
+  const fraction = age / SYNODIC_MONTH;
+  const illumination = (1 - Math.cos(2 * Math.PI * fraction)) / 2;
+  return { age, fraction, illumination };
+}
 
 const getDistanceMiles = (fromLocation, toLocation, fromCoords, toCoords) => {
   const from = fromCoords;
@@ -828,93 +774,370 @@ const getTimeBasedGreeting = (timezone) => {
  *  UI Components
  *  --------------------------*/
 
-const MoonIcon = ({ phase, size = 48 }) => {
-  const phaseIndex = MOON_PHASES.findIndex((p) => p.name === phase?.name) || 0;
-  const illumination = [0, 0.15, 0.5, 0.85, 1, 0.85, 0.5, 0.15][phaseIndex];
-  const isWaning = phaseIndex > 4;
+// Length of the fold → seal → fly sequence on the letter screen (keep in sync with index.css)
+const SEAL_ANIMATION_MS = 2050;
+const PRINT_DURATION_MS = 3600;
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const formatDayStamp = (date) =>
+  date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+
+const pad2 = (n) => String(n).padStart(2, "0");
+
+// SVG path for the lit part of a moon disc (fraction: 0 = new, 0.5 = full)
+function moonLitPath(fraction, c, r) {
+  const cosF = Math.cos(2 * Math.PI * fraction);
+  const rx = Math.abs(cosF) * r;
+  const waxing = fraction < 0.5;
+  const outerSweep = waxing ? 1 : 0;
+  const termSweep = waxing ? (cosF > 0 ? 0 : 1) : cosF > 0 ? 1 : 0;
+  return `M ${c} ${c - r} A ${r} ${r} 0 0 ${outerSweep} ${c} ${c + r} A ${rx} ${r} 0 0 ${termSweep} ${c} ${c - r} Z`;
+}
+
+const Icon = ({ children, size = 20 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.3"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    {children}
+  </svg>
+);
+
+const IconHome = () => (
+  <Icon>
+    <path d="M4 10.5 12 4l8 6.5V20H4z" />
+    <path d="M10 20v-5.5h4V20" />
+  </Icon>
+);
+
+const IconPen = () => (
+  <Icon size={22}>
+    <path d="M15.5 4.5 19.5 8.5 9 19H5v-4z" />
+    <path d="M13.5 6.5l4 4" />
+  </Icon>
+);
+
+const IconLetter = () => (
+  <Icon>
+    <rect x="3.5" y="6" width="17" height="12" rx="1" />
+    <path d="M3.5 6.5 12 13l8.5-6.5" />
+  </Icon>
+);
+
+const IconArrow = ({ dir = "right" }) => (
+  <Icon size={16}>
+    {dir === "right" ? <path d="M4 12h15M14 7l5 5-5 5" /> : <path d="M20 12H5M10 7l-5 5 5 5" />}
+  </Icon>
+);
+
+// Grayscale albedo of the lunar surface (NASA SVS CGI Moon Kit, equirectangular, public domain)
+let moonMapPromise = null;
+function loadMoonMap() {
+  moonMapPromise ??= new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const { data } = ctx.getImageData(0, 0, img.width, img.height);
+      const gray = new Float32Array(img.width * img.height);
+      for (let i = 0; i < gray.length; i++) {
+        gray[i] = (data[i * 4] * 0.3 + data[i * 4 + 1] * 0.59 + data[i * 4 + 2] * 0.11) / 255;
+      }
+      resolve({ w: img.width, h: img.height, gray });
+    };
+    img.onerror = reject;
+    img.src = moonMapUrl;
+  });
+  return moonMapPromise;
+}
+
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+
+// Light the near side for the given cycle fraction and bucket it into stitch levels (0–4)
+function computeStitches(map, fraction, size, cell) {
+  const theta = 2 * Math.PI * fraction;
+  const sun = [Math.sin(theta), 0, -Math.cos(theta)];
+  const r = size / 2;
+  const n = Math.floor(size / cell);
+  const offset = (size - n * cell) / 2;
+  const stitches = [];
+
+  const albedoAt = (x, y, z) => {
+    const lat = Math.asin(-y);
+    const lon = Math.atan2(x, z);
+    const u = Math.floor((0.5 + lon / (2 * Math.PI)) * (map.w - 1));
+    const v = Math.floor((0.5 - lat / Math.PI) * (map.h - 1));
+    return map.gray[v * map.w + u];
+  };
+
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      const cx = offset + (col + 0.5) * cell;
+      const cy = offset + (row + 0.5) * cell;
+      const x = (cx - r) / r;
+      const y = (cy - r) / r;
+      const d2 = x * x + y * y;
+      if (d2 > 0.97) continue;
+      const z = Math.sqrt(1 - d2);
+
+      // average a few samples per cell so stitches read as tone, not noise
+      const q = (cell / r) * 0.25;
+      let albedo = 0;
+      for (const [dx, dy] of [[-q, -q], [q, -q], [-q, q], [q, q]]) {
+        const sx = x + dx;
+        const sy = y + dy;
+        const sd = Math.min(0.999, sx * sx + sy * sy);
+        albedo += albedoAt(sx, sy, Math.sqrt(1 - sd)) / 4;
+      }
+      albedo = clamp01((albedo - 0.3) / 0.45);
+
+      // the moon stays nearly flat-lit until close to the terminator, so surface detail carries the image
+      const mu0 = x * sun[0] + y * sun[1] + z * sun[2];
+      const light = mu0 > 0 ? Math.pow(clamp01(mu0 * 5), 0.6) : 0;
+      const b = light * (0.25 + 0.75 * albedo);
+
+      // ink marks shadow, like an engraving: dark maria get heavy stitches, bright highlands light ones,
+      // and the unlit side is left as bare dots
+      const level = b < 0.04 ? 0 : b > 0.78 ? 1 : b > 0.6 ? 2 : b > 0.42 ? 3 : 4;
+      stitches.push({ cx, cy, level, d: Math.sqrt(d2) });
+    }
+  }
+  return stitches;
+}
+
+const STITCH_STYLE = [
+  null,
+  { alpha: 0.45, width: 0.8, cross: false },
+  { alpha: 0.6, width: 0.9, cross: true },
+  { alpha: 0.82, width: 1.15, cross: true },
+  { alpha: 1, width: 1.45, cross: true },
+];
+
+function drawStitch(ctx, s, cell, p) {
+  if (s.level === 0) {
+    ctx.globalAlpha = 0.3 * p;
+    ctx.beginPath();
+    ctx.arc(s.cx, s.cy, cell * 0.08, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+  const style = STITCH_STYLE[s.level];
+  const h = cell * 0.32 * p;
+  ctx.globalAlpha = style.alpha;
+  ctx.lineWidth = style.width;
+  ctx.beginPath();
+  ctx.moveTo(s.cx - h, s.cy + h);
+  ctx.lineTo(s.cx + h, s.cy - h);
+  if (style.cross) {
+    ctx.moveTo(s.cx - h, s.cy - h);
+    ctx.lineTo(s.cx + h, s.cy + h);
+  }
+  ctx.stroke();
+}
+
+// Real lunar surface, lit for tonight's phase, rendered as cross-stitches
+const StitchMoon = ({ fraction = 0.5, size = 232, cell = 5.5, className = "" }) => {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    let raf = 0;
+
+    loadMoonMap()
+      .then((map) => {
+        const canvas = canvasRef.current;
+        if (!alive || !canvas) return;
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.round(size * dpr);
+        canvas.height = Math.round(size * dpr);
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const ink = getComputedStyle(canvas).color;
+        ctx.strokeStyle = ink;
+        ctx.fillStyle = ink;
+        ctx.lineCap = "round";
+
+        const stitches = computeStitches(map, fraction, size, cell);
+        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const start = performance.now();
+        const duration = 1100;
+
+        const frame = (now) => {
+          const t = reduceMotion ? 2 : (now - start) / duration;
+          ctx.clearRect(0, 0, size, size);
+          for (const s of stitches) {
+            // stitches appear from the centre outwards
+            const p = clamp01((t * 1.25 - s.d) * 5);
+            if (p > 0) drawStitch(ctx, s, cell, p);
+          }
+          if (t < 1.25 + 0.2) raf = requestAnimationFrame(frame);
+        };
+        raf = requestAnimationFrame(frame);
+      })
+      .catch((err) => console.error("Moon map failed to load", err));
+
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+    };
+  }, [fraction, size, cell]);
 
   return (
-    <svg width={size} height={size} viewBox="0 0 48 48" fill="none">
-      <circle
-        cx="24"
-        cy="24"
-        r="22"
-        fill="#1a1a1a"
-        stroke="#3d4f6f"
-        strokeWidth="1"
-      />
-      <defs>
-        <clipPath id={`moonClip-${size}`}>
-          <circle cx="24" cy="24" r="21" />
-        </clipPath>
-      </defs>
-      <g clipPath={`url(#moonClip-${size})`}>
-        {illumination > 0 && (
-          <ellipse
-            cx={isWaning ? 24 + (1 - illumination) * 21 : 24 - (1 - illumination) * 21}
-            cy="24"
-            rx={21 * illumination}
-            ry="21"
-            fill="#e8e4dc"
-          />
-        )}
-      </g>
+    <canvas
+      ref={canvasRef}
+      className={`stitch-moon ${className}`}
+      style={{ "--moon-size": `${size}px` }}
+      aria-hidden="true"
+    />
+  );
+};
+
+const PhaseGlyph = ({ fraction, size = 16 }) => {
+  const c = size / 2;
+  const r = c - 1;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+      <circle cx={c} cy={c} r={r} fill="none" stroke="currentColor" strokeWidth="0.8" />
+      <path d={moonLitPath(fraction, c, r)} fill="currentColor" />
     </svg>
   );
 };
 
-const MoonVisual = ({ phase, size = 64 }) => {
-  const phaseData = MOON_PHASES.find((p) => p.name === phase?.name);
-
-  if (phaseData?.image) {
-    return (
-      <img
-        src={phaseData.image}
-        alt={phase?.name || "Moon phase"}
-        style={{
-          width: size,
-          height: size,
-          objectFit: "contain",
-          borderRadius: "50%",
-        }}
-      />
-    );
+// Irregular wax blob with a pressed crescent moon and two small stars
+const WAX_EDGE = (() => {
+  const points = [];
+  for (let i = 0; i < 48; i++) {
+    const a = (i / 48) * Math.PI * 2;
+    const r = 20.5 + Math.sin(a * 7) * 0.9 + Math.sin(a * 3 + 1.3) * 0.6;
+    points.push(`${(22 + Math.cos(a) * r).toFixed(2)} ${(22 + Math.sin(a) * r).toFixed(2)}`);
   }
+  return `M ${points.join(" L ")} Z`;
+})();
 
-  return <MoonIcon phase={phase} size={size} />;
+const WaxSeal = ({ size = 44 }) => {
+  const id = useId();
+  return (
+    <svg width={size} height={size} viewBox="0 0 44 44" aria-hidden="true" className="wax-seal">
+      <defs>
+        <radialGradient id={`${id}-wax`} cx="38%" cy="32%" r="75%">
+          <stop offset="0%" stopColor="#3a3734" />
+          <stop offset="60%" stopColor="#1c1b1a" />
+          <stop offset="100%" stopColor="#0c0c0c" />
+        </radialGradient>
+        <mask id={`${id}-crescent`}>
+          <circle cx="22" cy="22" r="7.6" fill="#fff" />
+          <circle cx="25.6" cy="19.8" r="6.6" fill="#000" />
+        </mask>
+      </defs>
+      <path d={WAX_EDGE} fill={`url(#${id}-wax)`} />
+      <circle cx="22" cy="22" r="14.5" fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="0.7" />
+      <circle cx="22" cy="22" r="13.2" fill="none" stroke="rgba(0,0,0,0.45)" strokeWidth="0.6" />
+      <circle cx="22" cy="22" r="7.6" fill="#ece6d9" mask={`url(#${id}-crescent)`} />
+      <path d="M29.2 14.2l.45 1.1 1.1.45-1.1.45-.45 1.1-.45-1.1-1.1-.45 1.1-.45z" fill="#ece6d9" opacity="0.85" />
+      <circle cx="30.4" cy="25.6" r="0.75" fill="#ece6d9" opacity="0.7" />
+    </svg>
+  );
 };
 
-const BottomNav = ({ current, onSelect, onSend }) => (
-  <div className="bottom-nav">
-    <div className="nav-shell">
-      <button
-        className={`nav-item ${current === "inbox" ? "is-active" : ""}`}
-        onClick={() => onSelect("inbox")}
-      >
-        <img src={homeIcon} alt="Home" className="nav-icon" />
-        <span className="nav-label">Home</span>
-      </button>
+const IconClose = () => (
+  <Icon size={18}>
+    <path d="M6 6l12 12M18 6 6 18" />
+  </Icon>
+);
 
-      <button
-  className={`nav-compose ${current === "send" ? "is-active" : ""}`}
-  onClick={onSend}
-  aria-label="Compose"
-  title="Compose"
->
-  <span className="nav-compose-circle">
-    <img src={composeIcon} alt="Compose" className="nav-icon--compose" />
-  </span>
-</button>
-
-      <button
-        className={`nav-item ${current === "gallery" ? "is-active" : ""}`}
-        onClick={() => onSelect("gallery")}
+const PhaseCycle = ({ currentName }) => (
+  <ol className="cycle" aria-label="Lunar cycle">
+    {MOON_PHASES.map((p, i) => (
+      <li
+        key={p.name}
+        className={`cycle-item ${p.name === currentName ? "is-current" : ""}`}
+        title={p.name}
       >
-        <img src={archiveIcon} alt="Archive" className="nav-icon" />
-        <span className="nav-label">Archive</span>
+        <PhaseGlyph fraction={i / 8} />
+      </li>
+    ))}
+  </ol>
+);
+
+const TickRing = ({ count = 72 }) => (
+  <svg className="ticks" viewBox="0 0 200 200" aria-hidden="true">
+    {Array.from({ length: count }, (_, i) => {
+      const a = (i / count) * Math.PI * 2 - Math.PI / 2;
+      const major = i % 6 === 0;
+      const r1 = major ? 89 : 92;
+      return (
+        <line
+          key={i}
+          x1={100 + Math.cos(a) * r1}
+          y1={100 + Math.sin(a) * r1}
+          x2={100 + Math.cos(a) * 98}
+          y2={100 + Math.sin(a) * 98}
+          className={major ? "is-major" : ""}
+          style={{ "--i": i }}
+        />
+      );
+    })}
+  </svg>
+);
+
+const TopBar = ({ onBack, step, total = 3, dark = false }) => (
+  <div className={`topbar ${dark ? "topbar--dark" : ""}`}>
+    {onBack ? (
+      <button onClick={onBack} className="back">
+        <IconArrow dir="left" />
+        Back
       </button>
-    </div>
+    ) : (
+      <span />
+    )}
+    {step && (
+      <div className="steps" aria-label={`Step ${step} of ${total}`}>
+        <span className="mono-label">
+          {pad2(step)} / {pad2(total)}
+        </span>
+        <span className="steps-bars">
+          {Array.from({ length: total }, (_, i) => (
+            <i key={i} className={i < step ? "is-on" : ""} />
+          ))}
+        </span>
+      </div>
+    )}
   </div>
+);
+
+const BottomNav = ({ current, onSelect, onSend }) => (
+  <nav className="nav" aria-label="Main">
+    <button
+      className={`nav-item ${current === "inbox" ? "is-active" : ""}`}
+      onClick={() => onSelect("inbox")}
+    >
+      <IconHome />
+      <span className="nav-label">Home</span>
+    </button>
+
+    <button className="nav-compose" onClick={onSend} aria-label="Write a letter" title="Write a letter">
+      <IconPen />
+    </button>
+
+    <button
+      className={`nav-item ${current === "gallery" ? "is-active" : ""}`}
+      onClick={() => onSelect("gallery")}
+    >
+      <IconLetter />
+      <span className="nav-label">Archive</span>
+    </button>
+  </nav>
 );
 
 const OnboardingScreen = ({
@@ -926,77 +1149,100 @@ const OnboardingScreen = ({
   onLocationChange,
   onSelectLocation,
   onBegin,
-}) => (
-  <div className="app-shell">
-    <div className="onboarding-content">
-      <div className="onboarding-header">
-        {/* <div className="logo-circle">
-          <MoonIcon phase={MOON_PHASES[4]} size={40} />
-        </div> */}
-        <div className="logo-circle">
-  <img src={logoSvg} alt="Mooncode logo" className="logo-img" />
-</div>
-        <h1 className="logo-text">Mooncode</h1>
-        <p className="tagline">Letters sealed by moonlight</p>
+  currentPhase,
+  moon,
+}) => {
+  const canBegin = userData.name.trim() && userData.location;
+
+  return (
+    <div className="app-shell onboard">
+      <div className="home-meta">
+        <span className="mono-label">Mooncode</span>
+        <span className="mono-label">{formatDayStamp(new Date())}</span>
       </div>
 
-      <div className="onboarding-form">
-        <div className="form-field">
-          <label>Your name</label>
+      <div className="onboard-hero stagger">
+        <StitchMoon fraction={moon.fraction} size={176} cell={5} />
+        <h1 className="display">
+          Letters sealed
+          <br />
+          by <em>moonlight.</em>
+        </h1>
+      </div>
+
+      <form
+        className="onboard-form stagger"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canBegin) onBegin();
+        }}
+      >
+        <div className="field">
+          <label htmlFor="mc-name" className="mono-label">
+            Your name
+          </label>
           <input
+            id="mc-name"
             type="text"
+            autoComplete="given-name"
+            placeholder="How should letters find you"
             value={userData.name}
             onChange={(e) => onUpdate("name", e.target.value)}
           />
         </div>
 
-        <div className="form-field">
-          <label>Location</label>
+        <div className="field">
+          <label htmlFor="mc-location" className="mono-label">
+            Where you watch the moon
+          </label>
           <input
+            id="mc-location"
             type="text"
+            autoComplete="off"
+            placeholder="City"
             value={locationQuery}
             onChange={(e) => onLocationChange(e.target.value)}
             onFocus={() => onLocationChange(locationQuery)}
           />
           {locationSuggestions.length > 0 && (
-            <div className="location-suggestions">
+            <div className="suggest">
               {locationSuggestions.map((option) => (
                 <button
+                  type="button"
                   key={`${option.label}-${option.timezone}`}
-                  className="location-option"
                   onMouseDown={(e) => {
                     e.preventDefault();
                     onSelectLocation(option);
                   }}
                 >
-                  <span className="location-name">{option.label}</span>
-                  <span className="location-meta">{option.timezone}</span>
+                  <span>{option.label}</span>
+                  <small>{option.timezone}</small>
                 </button>
               ))}
             </div>
           )}
-          {locationLoading && <p className="location-loading">Searching cities…</p>}
+          {locationLoading && <p className="field-hint">Searching cities…</p>}
         </div>
-      </div>
 
-      <button
-        onClick={onBegin}
-        className="btn-primary"
-        disabled={!userData.name.trim() || !userData.location}
-      >
-        Enter
-      </button>
+        <button type="submit" className="btn btn--ink btn--block" disabled={!canBegin}>
+          Enter <IconArrow />
+        </button>
+      </form>
+
+      <p className="mono-label onboard-foot">
+        Tonight · {currentPhase.name} · {Math.round(moon.illumination * 100)}% lit
+      </p>
     </div>
-  </div>
-);
+  );
+};
 
 const InboxScreen = ({
   userData,
   messages,
   currentPhase,
+  moon,
   moonPhaseLoading,
   onOpen,
-  onCompose,
   onLogout,
 }) => {
   const incoming = messages.filter((msg) => msg.from !== "You");
@@ -1005,74 +1251,106 @@ const InboxScreen = ({
   const greeting = getTimeBasedGreeting(userData.locationData?.timezone);
 
   return (
-    <div className="app-shell">
-      <div className="inbox-content">
-        <header className="inbox-header">
-          <div>
-            <p className="date-display">{formatFullDate(new Date())}</p>
-            <h1 className="greeting">
-              {greeting}
-              {userData.name ? `, ${userData.name}` : ""}
-            </h1>
-          </div>
-          <button onClick={onLogout} className="btn-ghost">
+    <div className="app-shell app-shell--nav">
+      <header className="home-head">
+        <div className="home-meta">
+          <span className="mono-label">{formatDayStamp(new Date())}</span>
+          <button onClick={onLogout} className="mono-label link">
             Log out
           </button>
-        </header>
+        </div>
+        <h1 className="display display--fit">
+          {greeting}
+          {userData.name ? (
+            <>
+              , <em>{userData.name}</em>
+            </>
+          ) : null}
+        </h1>
+      </header>
 
-        <div className="phase-card">
-          <div className="phase-visual">
-            <MoonVisual phase={currentPhase} size={64} />
+      <section className="moon-panel" aria-label="Tonight's moon">
+        <StitchMoon fraction={moon.fraction} size={232} />
+        <p className="mono-label">Tonight</p>
+        <p className="moon-name">{moonPhaseLoading ? "Reading the sky…" : currentPhase.name}</p>
+
+        <div className="stats">
+          <div className="stat">
+            <span className="mono-label">Light</span>
+            <span className="stat-value">{Math.round(moon.illumination * 100)}%</span>
           </div>
-          <div className="phase-info">
-            <p className="phase-name">{moonPhaseLoading ? "Loading..." : currentPhase.name}</p>
-            <p className="phase-meaning">A time for {currentPhase.meaning}</p>
+          <div className="stat">
+            <span className="mono-label">Day</span>
+            <span className="stat-value">
+              {Math.floor(moon.age) + 1}
+              <small>/29</small>
+            </span>
           </div>
-          <p className="phase-message">{currentPhase.personalMessage}</p>
+          <div className="stat">
+            <span className="mono-label">For</span>
+            <span className="stat-value">{currentPhase.meaning}</span>
+          </div>
         </div>
 
-        <section className="message-section">
-          <h2 className="section-title">Awaiting your moon</h2>
-          {pending.length === 0 ? (
-            <div className="empty-state">
-              <p>No letters waiting to be unlocked</p>
-            </div>
-          ) : (
-            <div className="message-list">
-              {pending.map((msg) => (
-                <button key={msg.id} onClick={() => onOpen(msg)} className="message-card">
-                  <div className="message-from">
-                    <span className="from-label">From</span>
-                    <span className="from-name">{msg.from}</span>
-                  </div>
-                  <span className="unlock-hint">Capture moon to read →</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
+        <PhaseCycle currentName={currentPhase.name} />
 
-        <section className="message-section">
-          <h2 className="section-title">Sent</h2>
-          {sent.length === 0 ? (
-            <div className="empty-state">
-              <p>No letters sent yet</p>
+        <div className="prompt">
+          <p className="mono-label">Tonight's prompt</p>
+          <p className="prompt-text">{currentPhase.personalMessage}</p>
+        </div>
+      </section>
+
+      <section className="list-section">
+        <header className="list-head">
+          <h2 className="mono-label">Awaiting your moon</h2>
+          <span className="mono-label">{pad2(pending.length)}</span>
+        </header>
+        {pending.length === 0 ? (
+          <p className="empty">No sealed letters tonight.</p>
+        ) : (
+          pending.map((msg, i) => (
+            <button
+              key={msg.id}
+              onClick={() => onOpen(msg)}
+              className="row row--pending"
+              style={{ animationDelay: `${i * 60}ms` }}
+            >
+              <span className="row-index">{pad2(i + 1)}</span>
+              <span className="row-main">
+                <span className="row-sub">From</span>
+                <span className="row-name">{msg.from}</span>
+              </span>
+              <span className="row-meta">
+                Unseal <IconArrow />
+              </span>
+            </button>
+          ))
+        )}
+      </section>
+
+      <section className="list-section">
+        <header className="list-head">
+          <h2 className="mono-label">Sent</h2>
+          <span className="mono-label">{pad2(sent.length)}</span>
+        </header>
+        {sent.length === 0 ? (
+          <p className="empty">Nothing sent yet. Tap the pen to write.</p>
+        ) : (
+          sent.map((msg, i) => (
+            <div key={msg.id} className="row" style={{ animationDelay: `${i * 60}ms` }}>
+              <span className="row-index">{pad2(i + 1)}</span>
+              <span className="row-main">
+                <span className="row-sub">To · {formatShortDateTime(new Date(msg.sentAt))}</span>
+                <span className="row-name">{msg.to}</span>
+              </span>
+              <span className="row-meta">
+                <i className={`status-dot ${msg.receivePhoto ? "" : "status-dot--transit"}`} />
+                {msg.receivePhoto ? "Opened" : "In transit"}
+              </span>
             </div>
-          ) : (
-            <div className="message-list">
-              {sent.map((msg) => (
-                <div key={msg.id} className="message-card message-card--sent">
-                  <div className="message-from">
-                    <span className="from-label">To</span>
-                    <span className="from-name">{msg.to}</span>
-                  </div>
-                  <span className="sent-status">{msg.receivePhoto ? "Opened" : "Waiting..."}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
+          ))
+        )}
+      </section>
     </div>
   );
 };
@@ -1081,13 +1359,7 @@ const InboxScreen = ({
  *  Select Recipient (locked for exhibition users)
  *  --------------------------*/
 
-const SelectRecipientScreen = ({
-  suggestions,
-  onSelect,
-  onBack,
-  defaultValue = "",
-  viewerName = "",
-}) => {
+const SelectRecipientScreen = ({ onSelect, onBack, defaultValue = "", viewerName = "" }) => {
   const locked = getLockedCounterparty(viewerName);
   const [name, setName] = useState(locked || defaultValue);
 
@@ -1096,56 +1368,35 @@ const SelectRecipientScreen = ({
   }, [locked]);
 
   return (
-    <div className="app-shell">
-      <div className="recipient-content recipient-content--centered">
-        <button
-          onClick={onBack}
-          className="back-btn"
-          style={{ margin: "0 auto 18px", display: "block", textAlign: "center" }}
-        >
-          ← Back
-        </button>
+    <form
+      className="app-shell"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (name.trim()) onSelect({ name: name.trim() });
+      }}
+    >
+      <TopBar onBack={onBack} step={2} />
 
-        <div className="recipient-header" style={{ textAlign: "center" }}>
-          <p className="step-indicator">Step 1 of 2</p>
-          <h1>Who will receive this letter?</h1>
-        </div>
-
-        <div
-          className="form-field"
-          style={{ width: "100%", maxWidth: 280, margin: "18px auto 0" }}
-        >
-          <label style={{ textAlign: "left", display: "block" }}>Recipient name</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Type a name…"
-            disabled={!!locked}
-            style={{
-              width: "100%",
-              boxSizing: "border-box",
-              opacity: locked ? 0.7 : 1,
-            }}
-          />
-        </div>
-
-        <button
-          className="btn-send"
-          disabled={!name.trim()}
-          onClick={() => onSelect({ name: name.trim() })}
-          style={{
-            width: "100%",
-            maxWidth: 280,
-            margin: "32px auto 0",
-            display: "block",
-            boxSizing: "border-box",
-          }}
-        >
-          Continue →
-        </button>
+      <div className="step-body stagger">
+        <p className="mono-label">Recipient</p>
+        <h1 className="display">Who is this letter for?</h1>
+        <input
+          type="text"
+          className="input-xl"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Their name"
+          disabled={!!locked}
+          autoComplete="off"
+          aria-label="Recipient name"
+        />
+        <p className="field-hint">They'll open it only after capturing their own moon.</p>
       </div>
-    </div>
+
+      <button type="submit" className="btn btn--ink btn--block" disabled={!name.trim()}>
+        Continue <IconArrow />
+      </button>
+    </form>
   );
 };
 
@@ -1158,84 +1409,452 @@ const ComposeLetterScreen = ({
   message,
   onChange,
   onSend,
+  onSealed,
   onBack,
+  currentPhase,
   viewerName = "",
 }) => {
   const locked = isExhibitionUser(viewerName);
+  const [sending, setSending] = useState(false);
+  const stageRef = useRef(null);
+  const letterRef = useRef(null);
+  const envelopeRef = useRef(null);
+
+  // Size the fold so the letter lands exactly inside the envelope pocket
+  const measureFold = () => {
+    const stage = stageRef.current;
+    const l = letterRef.current.getBoundingClientRect();
+    const e = envelopeRef.current.getBoundingClientRect();
+    stage.style.setProperty("--fold-sx", ((e.width * 0.86) / l.width).toFixed(4));
+    stage.style.setProperty("--fold-sy", ((e.height * 0.76) / l.height).toFixed(4));
+    stage.style.setProperty("--fold-dx", `${e.left + e.width / 2 - (l.left + l.width / 2)}px`);
+    stage.style.setProperty("--fold-dy", `${e.top + e.height * 0.56 - (l.top + l.height / 2)}px`);
+    stage.style.setProperty("--fold-lift", `${e.height * 0.95}px`);
+  };
+
+  const handleSend = async () => {
+    if (sending) return;
+    document.activeElement?.blur?.();
+    measureFold();
+    setSending(true);
+    const animation = wait(SEAL_ANIMATION_MS);
+    const ok = await onSend();
+    if (!ok) {
+      setSending(false);
+      return;
+    }
+    await animation;
+    const r = envelopeRef.current.getBoundingClientRect();
+    onSealed({ left: r.left, top: r.top, width: r.width, height: r.height });
+  };
 
   return (
-    <div className="app-shell">
-      <div className="letter-content">
-        <button onClick={onBack} className="back-btn">
-          ← Back
-        </button>
+    <div className={`app-shell compose ${sending ? "is-sending" : ""}`}>
+      <TopBar onBack={sending ? null : onBack} step={3} />
 
-        <div className="letter-paper">
-          <div className="letter-header">
-            <p className="letter-date">{formatFullDate(new Date())}</p>
-          </div>
+      <div className="letter-stage" ref={stageRef}>
+        <div className="envelope-layer envelope-layer--rear" aria-hidden="true">
+          <div className="envelope-back" />
+        </div>
 
-          <div className="letter-recipient">
-            <span className="letter-to">To</span>
+        <article className="letter" ref={letterRef}>
+          <header className="letter-head mono-label">
+            <span>Mooncode</span>
+            <span>{formatFullDate(new Date())}</span>
+          </header>
+
+          <div className="letter-to">
+            <span className="mono-label">To</span>
             <span className="letter-name">{recipient?.name}</span>
           </div>
 
-          <div className="letter-body">
-            <textarea
-              value={message}
-              onChange={(e) => onChange(e.target.value)}
-              className="letter-input"
-              readOnly={locked}
-              style={{ opacity: locked ? 0.85 : 1 }}
-            />
-          </div>
+          <textarea
+            value={message}
+            onChange={(e) => onChange(e.target.value)}
+            className="letter-input"
+            placeholder="Dear…"
+            readOnly={locked || sending}
+            aria-label="Your letter"
+          />
 
-          <div className="letter-closing">
-            <p className="closing-text">Sealed under tonight's moon</p>
+          <footer className="letter-foot mono-label">
+            <span>Under the {currentPhase.name}</span>
+            <span>{message.trim() ? message.trim().split(/\s+/).length : 0} words</span>
+          </footer>
+        </article>
+
+        <div className="envelope-layer envelope-layer--front" ref={envelopeRef} aria-hidden="true">
+          <div className="envelope-front" />
+        </div>
+        <div className="envelope-layer envelope-layer--flap" aria-hidden="true">
+          <div className="envelope-flap" />
+        </div>
+        <div className="envelope-layer envelope-layer--seal" aria-hidden="true">
+          <div className="envelope-seal">
+            <WaxSeal />
           </div>
         </div>
+      </div>
 
-        <button onClick={onSend} className="btn-send" disabled={!message.trim()}>
-          Seal & Send
+      <div className="compose-foot">
+        <button onClick={handleSend} className="btn btn--ink btn--block" disabled={!message.trim() || sending}>
+          Seal &amp; send
         </button>
       </div>
     </div>
   );
 };
 
-const MessageSentScreen = ({ recipient, onDone }) => {
+// Dotted flight path in the sky's 300×260 viewBox; the envelope's on-screen width as it travels it
+const TRAIL = "M 26 244 Q 58 96 222 71";
+const TRAVEL_WIDTH_START = 52;
+const TRAVEL_WIDTH_END = 22;
+const SHRINK_MS = 700;
+const TRAVEL_MS = 1600;
+
+const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+const MessageSentScreen = ({ from, recipient, currentPhase, moon, onDone }) => {
+  const onDoneRef = useRef(onDone);
+  const trailRef = useRef(null);
+  const revealRef = useRef(null);
+  const ghostRef = useRef(null);
+  const [traveling, setTraveling] = useState(false);
+
   useEffect(() => {
-    const timer = setTimeout(onDone, 3500);
+    onDoneRef.current = onDone;
+  });
+
+  useEffect(() => {
+    const timer = setTimeout(() => onDoneRef.current(), 7500);
     return () => clearTimeout(timer);
-  }, [onDone]);
+  }, []);
+
+  // The sealed envelope from the letter screen shrinks onto the start of the trail,
+  // then flies along it into the moon while the dotted line draws in behind it
+  useEffect(() => {
+    const anims = [];
+    const raf = requestAnimationFrame(() => {
+      const svg = trailRef.current;
+      const reveal = revealRef.current;
+      const ghost = ghostRef.current;
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (!from || !svg || !ghost || reduceMotion) {
+        if (reveal) reveal.style.strokeDashoffset = "0";
+        setTraveling(true);
+        return;
+      }
+
+      const ctm = svg.getScreenCTM();
+      // measure the plain path; the reveal path's pathLength="1" can skew point lookups
+      const geometry = svg.querySelector(".trail-dots");
+      const length = geometry.getTotalLength();
+      const cx = from.left + from.width / 2;
+      const cy = from.top + from.height / 2;
+      const placeAt = (p, width) => {
+        const pt = geometry.getPointAtLength(p * length);
+        const screen = new DOMPoint(pt.x, pt.y).matrixTransform(ctm);
+        return `translate(${screen.x - cx}px, ${screen.y - cy}px) scale(${width / from.width})`;
+      };
+
+      const shrink = ghost.animate([{ transform: "none" }, { transform: placeAt(0, TRAVEL_WIDTH_START) }], {
+        duration: SHRINK_MS,
+        easing: "cubic-bezier(0.65, 0, 0.35, 1)",
+        fill: "forwards",
+      });
+      anims.push(shrink);
+
+      shrink.onfinish = () => {
+        const steps = 40;
+        const flight = [];
+        const line = [];
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const p = easeInOutCubic(t);
+          const width = TRAVEL_WIDTH_START + (TRAVEL_WIDTH_END - TRAVEL_WIDTH_START) * p;
+          flight.push({ offset: t, transform: placeAt(p, width), opacity: t < 0.85 ? 1 : 1 - (t - 0.85) / 0.15 });
+          line.push({ offset: t, strokeDashoffset: 1 - p });
+        }
+        anims.push(ghost.animate(flight, { duration: TRAVEL_MS, fill: "forwards" }));
+        anims.push(reveal.animate(line, { duration: TRAVEL_MS, fill: "forwards" }));
+        setTraveling(true);
+      };
+    });
+
+    return () => {
+      cancelAnimationFrame(raf);
+      anims.forEach((a) => {
+        a.onfinish = null;
+        a.cancel();
+      });
+    };
+  }, [from]);
 
   return (
-    <div className="app-shell">
-      <div className="sent-content">
-        <div className="sent-text">
-          <h2>Letter sent</h2>
-          <p>Your message is traveling to {recipient?.name}</p>
-          <p className="sent-subtitle">They'll read it under their moon</p>
+    <div className="app-shell sent">
+      <div className={`sky ${traveling ? "is-traveling" : ""}`}>
+        <StitchMoon fraction={moon.fraction} size={150} cell={5} />
+        <svg className="trail" viewBox="0 0 300 260" aria-hidden="true" ref={trailRef}>
+          <defs>
+            <mask id="trail-mask">
+              <path d={TRAIL} pathLength="1" className="trail-reveal" ref={revealRef} />
+            </mask>
+          </defs>
+          <path d={TRAIL} className="trail-dots" mask="url(#trail-mask)" />
+        </svg>
+      </div>
+
+      <div className="sent-copy stagger">
+        <h2 className="display">On its way.</h2>
+        <dl className="readout">
+          <dt>To</dt>
+          <dd>{recipient?.name}</dd>
+          <dt>Sealed</dt>
+          <dd>{formatShortDateTime(new Date())}</dd>
+          <dt>Under</dt>
+          <dd>{currentPhase.name}</dd>
+          <dt>Opens</dt>
+          <dd>When they capture their moon</dd>
+        </dl>
+        <button className="btn btn--line btn--block" onClick={onDone}>
+          Back home
+        </button>
+      </div>
+
+      {from && (
+        <div
+          ref={ghostRef}
+          className="ghost-envelope"
+          style={{ left: from.left, top: from.top, width: from.width, height: from.height }}
+          aria-hidden="true"
+        >
+          <div className="envelope-back" />
+          <div className="envelope-front" />
+          <div className="envelope-flap" />
+          <div className="envelope-seal">
+            <WaxSeal />
+          </div>
         </div>
+      )}
+    </div>
+  );
+};
+
+/** ---------------------------
+ *  Opened-letter stories: shown to the sender on login, once per opened letter
+ *  --------------------------*/
+
+const HOLD_TO_PAUSE_MS = 220;
+
+const seenOpenedKey = (name) => `mooncode_seen_opened:${name}`;
+
+function readSeenOpened(name) {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(seenOpenedKey(name)) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+function markOpenedSeen(name, id) {
+  try {
+    const seen = readSeenOpened(name);
+    seen.add(id);
+    localStorage.setItem(seenOpenedKey(name), JSON.stringify([...seen]));
+  } catch {
+    // storage unavailable — the story may show again next time
+  }
+}
+
+const cityOf = (location) => (location ? location.split(",")[0] : "");
+
+const OpenedStories = ({ items, onSeen, onClose, onArchive }) => {
+  const [index, setIndex] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const pressStart = useRef(0);
+  const onSeenRef = useRef(onSeen);
+  const msg = items[index];
+  const isLast = index === items.length - 1;
+
+  useEffect(() => {
+    onSeenRef.current = onSeen;
+  });
+
+  useEffect(() => {
+    onSeenRef.current(msg.id);
+  }, [msg.id]);
+
+  const next = () => (isLast ? onClose() : setIndex((i) => i + 1));
+  const prev = () => setIndex((i) => Math.max(0, i - 1));
+
+  const nextRef = useRef(next);
+  const prevRef = useRef(prev);
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    nextRef.current = next;
+    prevRef.current = prev;
+    closeRef.current = onClose;
+  });
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") closeRef.current();
+      if (e.key === "ArrowRight") nextRef.current();
+      if (e.key === "ArrowLeft") prevRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = overflow;
+    };
+  }, []);
+
+  const tapProps = (action) => ({
+    onPointerDown: () => {
+      pressStart.current = Date.now();
+      setPaused(true);
+    },
+    onPointerUp: () => setPaused(false),
+    onPointerLeave: () => setPaused(false),
+    onClick: () => {
+      // a long press only pauses; a quick tap moves between stories
+      if (Date.now() - pressStart.current < HOLD_TO_PAUSE_MS) action();
+    },
+  });
+
+  const sendLocation = msg.sendPhoto?.location;
+  const receiveLocation = msg.receivePhoto?.location;
+  const distance = getDistanceMiles(sendLocation, receiveLocation, msg.sendPhoto?.coords, msg.receivePhoto?.coords);
+
+  return (
+    <div className="stories" role="dialog" aria-modal="true" aria-label="Your letters were opened">
+      <button className="stories-tap stories-tap--prev" aria-label="Previous" {...tapProps(prev)} />
+      <button className="stories-tap stories-tap--next" aria-label="Next" {...tapProps(next)} />
+
+      <div className="stories-top">
+        <div className="stories-bars">
+          {items.map((m, i) => (
+            <span key={m.id} className="stories-bar">
+              <i
+                className={i < index ? "is-done" : i === index ? "is-active" : ""}
+                style={i === index ? { animationPlayState: paused ? "paused" : "running" } : undefined}
+                onAnimationEnd={i === index ? next : undefined}
+              />
+            </span>
+          ))}
+        </div>
+        <div className="stories-head">
+          <span className="mono-label">
+            Letter opened{items.length > 1 ? ` · ${pad2(index + 1)} / ${pad2(items.length)}` : ""}
+          </span>
+          <button className="stories-close" onClick={onClose} aria-label="Close">
+            <IconClose />
+          </button>
+        </div>
+      </div>
+
+      <div className="stories-body" key={msg.id}>
+        <h2 className="display">
+          {msg.to} opened <em>your letter.</em>
+        </h2>
+
+        <div className="story-moons">
+          <figure>
+            <div className="story-photo">
+              {msg.sendPhoto?.dataUrl && <img src={msg.sendPhoto.dataUrl} alt="Your moon" />}
+            </div>
+            <figcaption>
+              <span className="story-name">You</span>
+              <span className="mono-label">{cityOf(sendLocation) || "Your moon"}</span>
+            </figcaption>
+          </figure>
+
+          <div className="story-link">
+            <span className="mono-label">{distance ? `${distance.toLocaleString("en-US")} mi` : "↔"}</span>
+          </div>
+
+          <figure>
+            <div className="story-photo">
+              {msg.receivePhoto?.dataUrl && <img src={msg.receivePhoto.dataUrl} alt={`${msg.to}'s moon`} />}
+            </div>
+            <figcaption>
+              <span className="story-name">{msg.to}</span>
+              <span className="mono-label">{cityOf(receiveLocation) || "Their moon"}</span>
+            </figcaption>
+          </figure>
+        </div>
+
+        <dl className="readout story-readout">
+          <dt>Sealed</dt>
+          <dd>{formatShortDateTime(new Date(msg.sentAt))}</dd>
+          <dt>Opened</dt>
+          <dd>{msg.receiveAt ? formatShortDateTime(new Date(msg.receiveAt)) : "—"}</dd>
+        </dl>
+      </div>
+
+      <div className="stories-foot">
+        {isLast ? (
+          <button className="btn btn--light btn--block" onClick={onArchive}>
+            See archive
+          </button>
+        ) : (
+          <span className="mono-label">Tap for next</span>
+        )}
       </div>
     </div>
   );
 };
 
+const PRINT_LINES = [92, 78, 88, 64, 0, 90, 84, 72, 86, 40, 0, 52];
+
 const PrintingScreen = ({ message, onComplete }) => {
+  const [progress, setProgress] = useState(0);
+  const onCompleteRef = useRef(onComplete);
   useEffect(() => {
-    const timer = setTimeout(onComplete, 2000);
-    return () => clearTimeout(timer);
-  }, [onComplete]);
+    onCompleteRef.current = onComplete;
+  });
+
+  useEffect(() => {
+    const start = Date.now();
+    const tick = setInterval(() => {
+      setProgress(Math.min(100, Math.round(((Date.now() - start) / PRINT_DURATION_MS) * 100)));
+    }, 80);
+    const timer = setTimeout(() => onCompleteRef.current(), PRINT_DURATION_MS + 500);
+    return () => {
+      clearInterval(tick);
+      clearTimeout(timer);
+    };
+  }, []);
 
   return (
-    <div className="app-shell">
-      <div className="printing-content">
-        <div className="printing-text">
-          <h2>Printing your letter</h2>
-          <p>Your moon printer is bringing it to paper...</p>
-          <p style={{ marginTop: 12, opacity: 0.7, fontSize: 12 }}>From {message?.from}</p>
+    <div className="app-shell printing">
+      <div className="printer" aria-hidden="true">
+        <div className="printer-body">
+          <i className="printer-light" />
+          <i className="printer-slot" />
         </div>
+        <div className="printer-out">
+          <div className="print-sheet">
+            <p className="mono-label">From {message?.from}</p>
+            {PRINT_LINES.map((w, i) => (
+              <i key={i} className="print-line" style={{ width: `${w}%` }} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="printing-copy">
+        <h2 className="display">Printing your letter</h2>
+        <p className="field-hint">The moon printer is bringing it to paper.</p>
+        <div className="progress">
+          <span className="progress-bar" style={{ transform: `scaleX(${progress / 100})` }} />
+        </div>
+        <p className="mono-label progress-label">
+          <span>From {message?.from}</span>
+          <span>{pad2(progress)}%</span>
+        </p>
       </div>
     </div>
   );
@@ -1247,93 +1866,114 @@ const GalleryScreen = ({ messages }) => {
     .sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt));
 
   return (
-    <div className="app-shell">
-      <div className="gallery-content">
-        <header className="gallery-header">
-          <h1>Archive</h1>
-          <p>Letters exchanged under the moon</p>
-        </header>
+    <div className="app-shell app-shell--nav">
+      <header className="archive-head">
+        <p className="mono-label">
+          Archive · {pad2(galleryItems.length)} {galleryItems.length === 1 ? "letter" : "letters"}
+        </p>
+        <h1 className="display display--fit">
+          Two moons, <em>one letter.</em>
+        </h1>
+      </header>
 
-        {galleryItems.length === 0 ? (
-          <div className="empty-state">
-            <p>No letters in the archive yet</p>
-          </div>
-        ) : (
-          <div className="gallery-list">
-            {galleryItems.map((msg) => {
-              const sendLocation = msg.sendPhoto?.location;
-              const receiveLocation = msg.receivePhoto?.location;
+      {galleryItems.length === 0 ? (
+        <p className="empty">When a letter is opened, both moons will rest here.</p>
+      ) : (
+        galleryItems.map((msg, i) => {
+          const sendLocation = msg.sendPhoto?.location;
+          const receiveLocation = msg.receivePhoto?.location;
 
-              // Your send/receive coords in this app are already objects with lat/lon
-              const distance = getDistanceMiles(
-                sendLocation,
-                receiveLocation,
-                msg.sendPhoto?.coords,
-                msg.receivePhoto?.coords
-              );
+          // Your send/receive coords in this app are already objects with lat/lon
+          const distance = getDistanceMiles(
+            sendLocation,
+            receiveLocation,
+            msg.sendPhoto?.coords,
+            msg.receivePhoto?.coords
+          );
 
-              const locationLine =
-                sendLocation && receiveLocation
-                  ? `${sendLocation} ↔ ${receiveLocation}`
-                  : sendLocation || receiveLocation || "Location unavailable";
+          const locationLine =
+            sendLocation && receiveLocation
+              ? `${sendLocation} ↔ ${receiveLocation}`
+              : sendLocation || receiveLocation || "Location unavailable";
 
-              const senderName = msg.rawSender || msg.from;
-              const receiverName = msg.rawRecipient || msg.to;
+          const senderName = msg.rawSender || msg.from;
+          const receiverName = msg.rawRecipient || msg.to;
 
-              return (
-                <div key={msg.id} className="gallery-card">
-                  <div className="gallery-from">{locationLine}</div>
-                  <p className="gallery-distance">
-                    {distance ? `${distance} miles apart` : "Distance unavailable"}
-                  </p>
+          return (
+            <article key={msg.id} className="pair" style={{ animationDelay: `${i * 80}ms` }}>
+              <header className="pair-head mono-label">
+                <span>No. {pad2(galleryItems.length - i)}</span>
+                <span>{formatShortDateTime(new Date(msg.sentAt))}</span>
+              </header>
 
-                  <div className="gallery-moons">
-                    <div className="gallery-moon">
-                      <div className="moon-photo">
-                        {msg.sendPhoto?.dataUrl && <img src={msg.sendPhoto.dataUrl} alt="Send moon" />}
-                      </div>
-                      <div className="moon-meta">
-                        <span className="moon-location">{senderName}</span>
-                        <span className="moon-date">Sent {formatShortDateTime(new Date(msg.sentAt))}</span>
-                      </div>
-                    </div>
-
-                    <div className="gallery-connector">↔</div>
-
-                    <div className="gallery-moon">
-                      <div className="moon-photo">
-                        {msg.receivePhoto?.dataUrl && (
-                          <img src={msg.receivePhoto.dataUrl} alt="Receive moon" />
-                        )}
-                      </div>
-                      <div className="moon-meta">
-                        <span className="moon-location">{receiverName}</span>
-                        <span className="moon-date">
-                          {msg.receiveAt
-                            ? `Received ${formatShortDateTime(new Date(msg.receiveAt))}`
-                            : "Not yet received"}
-                        </span>
-                      </div>
-                    </div>
+              <div className="pair-moons">
+                <figure>
+                  <div className="pair-photo">
+                    {msg.sendPhoto?.dataUrl && <img src={msg.sendPhoto.dataUrl} alt="Sender's moon" />}
                   </div>
+                  <figcaption>
+                    <span className="pair-name">{senderName}</span>
+                    <span className="mono-label">Sent {formatDayStamp(new Date(msg.sentAt))}</span>
+                  </figcaption>
+                </figure>
+
+                <div className="pair-link">
+                  <span className="mono-label">
+                    {distance ? `${distance.toLocaleString("en-US")} mi` : "—"}
+                  </span>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+
+                <figure>
+                  <div className="pair-photo">
+                    {msg.receivePhoto?.dataUrl && (
+                      <img src={msg.receivePhoto.dataUrl} alt="Recipient's moon" />
+                    )}
+                  </div>
+                  <figcaption>
+                    <span className="pair-name">{receiverName}</span>
+                    <span className="mono-label">
+                      {msg.receiveAt ? `Opened ${formatDayStamp(new Date(msg.receiveAt))}` : "Not yet opened"}
+                    </span>
+                  </figcaption>
+                </figure>
+              </div>
+
+              <p className="pair-route">{locationLine}</p>
+            </article>
+          );
+        })
+      )}
     </div>
   );
 };
+
+// Only offer cities: capitals and regional seats, or any populated place of a real town's size.
+// Drops landmarks (zoos, airports, parks), neighbourhoods and tiny villages.
+const CITY_SEAT_CODES = new Set(["PPLC", "PPLA", "PPLA2", "PPLG"]);
+const CITY_MIN_POPULATION = 10000;
+
+function isCityResult(item) {
+  const code = item.feature_code || "";
+  if (CITY_SEAT_CODES.has(code)) return true;
+  return ["PPL", "PPLA3", "PPLA4"].includes(code) && (item.population || 0) >= CITY_MIN_POPULATION;
+}
 
 /** ---------------------------
  *  Main App
  *  --------------------------*/
 
+// Sign-in lasts for the browser session only: a refresh keeps you in, reopening the app starts at onboarding
+try {
+  localStorage.removeItem("mooncode_user");
+  localStorage.removeItem("mooncode_route");
+} catch {
+  // storage unavailable (private mode)
+}
+
 const MoonCodeApp = () => {
   const [userData, setUserData] = useState(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem("mooncode_user") || "{}");
+      const stored = JSON.parse(sessionStorage.getItem("mooncode_user") || "{}");
       return {
         name: stored.name || "",
         location: stored.location || "",
@@ -1346,8 +1986,8 @@ const MoonCodeApp = () => {
 
   const [route, setRoute] = useState(() => {
     try {
-      const storedUser = JSON.parse(localStorage.getItem("mooncode_user") || "{}");
-      const storedRoute = localStorage.getItem("mooncode_route");
+      const storedUser = JSON.parse(sessionStorage.getItem("mooncode_user") || "{}");
+      const storedRoute = sessionStorage.getItem("mooncode_route");
       if (storedUser?.name) {
         if (storedRoute && storedRoute !== "onboarding") return storedRoute;
         return "inbox";
@@ -1362,6 +2002,10 @@ const MoonCodeApp = () => {
   const [sendPhoto, setSendPhoto] = useState(null);
   const [recipient, setRecipient] = useState(null);
   const [recipientDraft, setRecipientDraft] = useState("");
+  // where the sealed envelope sat on the letter screen, so the next screen can pick it up from there
+  const [sealedFrom, setSealedFrom] = useState(null);
+  // sent letters opened since the sender last looked — shown once as stories after login
+  const [openedStories, setOpenedStories] = useState(null);
   const [messageText, setMessageText] = useState("");
 
   const [locationQuery, setLocationQuery] = useState(userData.location || "");
@@ -1370,6 +2014,7 @@ const MoonCodeApp = () => {
 
   const [currentPhase, setCurrentPhase] = useState(MOON_PHASES[0]);
   const [moonPhaseLoading, setMoonPhaseLoading] = useState(true);
+  const [moon, setMoon] = useState(() => getMoonInfo(new Date()));
 
   // Fetch universal moon phase from API
   useEffect(() => {
@@ -1418,7 +2063,10 @@ const MoonCodeApp = () => {
         console.error("Failed to fetch moon phase from API:", error);
         if (isMounted) setCurrentPhase(getMoonPhaseLocal(new Date()));
       } finally {
-        if (isMounted) setMoonPhaseLoading(false);
+        if (isMounted) {
+          setMoon(getMoonInfo(new Date()));
+          setMoonPhaseLoading(false);
+        }
       }
     }
 
@@ -1470,11 +2118,13 @@ const MoonCodeApp = () => {
   };
 
   useEffect(() => {
-    localStorage.setItem("mooncode_user", JSON.stringify(userData));
+    sessionStorage.setItem("mooncode_user", JSON.stringify(userData));
   }, [userData]);
 
   useEffect(() => {
-    if (route) localStorage.setItem("mooncode_route", route);
+    if (route) sessionStorage.setItem("mooncode_route", route);
+    // each screen starts at the top so the nav and browser chrome don't jump between tabs
+    window.scrollTo(0, 0);
   }, [route]);
 
   useEffect(() => {
@@ -1483,7 +2133,8 @@ const MoonCodeApp = () => {
 
   useEffect(() => {
     const query = locationQuery.trim();
-    if (query.length < 2) {
+    // nothing to search once the text is the city that was just picked
+    if (query.length < 2 || query === userData.location) {
       setLocationSuggestions([]);
       setLocationLoading(false);
       return;
@@ -1497,18 +2148,21 @@ const MoonCodeApp = () => {
         const response = await fetch(
           `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
             query
-          )}&count=6&language=en&format=json`,
+          )}&count=30&language=en&format=json`,
           { signal: controller.signal }
         );
         const data = await response.json();
-        const results = data?.results || [];
-        const mapped = results.map((item) => ({
-          label: `${item.name}${item.admin1 ? `, ${item.admin1}` : ""}, ${item.country}`,
-          timezone: item.timezone,
-          lat: item.latitude,
-          lon: item.longitude,
-        }));
-        setLocationSuggestions(mapped);
+        const results = (data?.results || []).filter(isCityResult);
+        const seen = new Set();
+        const mapped = [];
+        for (const item of results) {
+          const region = item.admin1 && item.admin1 !== item.name ? `, ${item.admin1}` : "";
+          const label = `${item.name}${region}${item.country ? `, ${item.country}` : ""}`;
+          if (seen.has(label)) continue;
+          seen.add(label);
+          mapped.push({ label, timezone: item.timezone, lat: item.latitude, lon: item.longitude });
+        }
+        setLocationSuggestions(mapped.slice(0, 6));
       } catch (e) {
         if (e.name !== "AbortError") setLocationSuggestions([]);
       } finally {
@@ -1520,7 +2174,7 @@ const MoonCodeApp = () => {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [locationQuery]);
+  }, [locationQuery, userData.location]);
 
   // Load + realtime subscribe
   useEffect(() => {
@@ -1532,7 +2186,13 @@ const MoonCodeApp = () => {
     fetchMessagesForUser(viewer)
       .then((rows) => {
         if (!isMounted) return;
-        setMessages(rows.map((r) => mapRowToMessage(r, viewer)));
+        const mapped = rows.map((r) => mapRowToMessage(r, viewer));
+        setMessages(mapped);
+        const seen = readSeenOpened(viewer);
+        const opened = mapped
+          .filter((m) => m.from === "You" && m.receivePhoto && !seen.has(m.id))
+          .sort((a, b) => new Date(a.receiveAt) - new Date(b.receiveAt));
+        setOpenedStories(opened.length ? { viewer, items: opened } : null);
       })
       .catch((err) => console.error("fetchMessagesForUser", err));
 
@@ -1561,7 +2221,11 @@ const MoonCodeApp = () => {
     };
   }, [userData.name]);
 
-  const handleStartSend = () => setRoute("sendCapture");
+  const handleStartSend = () => {
+    setRecipient(null);
+    setRecipientDraft("");
+    setRoute("sendCapture");
+  };
 
   const handleSelectRecipient = (contact) => {
     // Exhibition users: force counterparty
@@ -1576,12 +2240,12 @@ const MoonCodeApp = () => {
     if (!sender) {
       alert("Enter your name first.");
       setRoute("onboarding");
-      return;
+      return false;
     }
 
     const forcedRecipient = getLockedCounterparty(sender);
     const recipientName = forcedRecipient ? forcedRecipient : recipient?.name?.trim();
-    if (!recipientName) return;
+    if (!recipientName) return false;
 
     const bodyText = isExhibitionUser(sender)
       ? EXHIBITION_MESSAGE
@@ -1598,13 +2262,15 @@ const MoonCodeApp = () => {
       const mapped = mapRowToMessage(row, sender);
       setMessages((prev) => [mapped, ...prev]);
       setActiveMessage(mapped);
-      setRoute("messageSent");
+      return true;
     } catch (e) {
       showSupabaseError(e, "Failed to send message. Check RLS policies.");
+      return false;
     }
   };
 
   const handleMessageSentComplete = () => {
+    setSealedFrom(null);
     setMessageText("");
     setRecipient(null);
     setSendPhoto(null);
@@ -1623,10 +2289,11 @@ const MoonCodeApp = () => {
 
   const handlePrintingComplete = () => setRoute("inbox");
 
-  const showNav = ["inbox", "compose", "gallery", "selectRecipient"].includes(route);
+  const showNav = ["inbox", "gallery"].includes(route);
+  const isNight = route === "sendCapture" || route === "unlockCapture";
 
   return (
-    <div className="mooncode-app">
+    <div className={`mooncode-app ${isNight ? "is-night" : ""}`}>
       {route === "onboarding" && (
         <OnboardingScreen
           userData={userData}
@@ -1637,6 +2304,8 @@ const MoonCodeApp = () => {
           onLocationChange={handleLocationInput}
           onSelectLocation={handleSelectLocation}
           onBegin={() => setRoute("inbox")}
+          currentPhase={currentPhase}
+          moon={moon}
         />
       )}
 
@@ -1645,12 +2314,12 @@ const MoonCodeApp = () => {
           userData={userData}
           messages={sortedMessages}
           currentPhase={currentPhase}
+          moon={moon}
           moonPhaseLoading={moonPhaseLoading}
           onOpen={handleOpenMessage}
-          onCompose={handleStartSend}
           onLogout={() => {
-            localStorage.removeItem("mooncode_user");
-            localStorage.removeItem("mooncode_route");
+            sessionStorage.removeItem("mooncode_user");
+            sessionStorage.removeItem("mooncode_route");
             setUserData({ name: "", location: "", locationData: null });
             setLocationQuery("");
             setLocationSuggestions([]);
@@ -1663,6 +2332,7 @@ const MoonCodeApp = () => {
         <MoonCameraCapture
           title="Capture your moon"
           subtitle="Seal your letter with tonight's light"
+          step={1}
           locationLabel={userData.location}
           locationCoords={userData.locationData}
           onBack={() => setRoute("inbox")}
@@ -1675,7 +2345,6 @@ const MoonCodeApp = () => {
 
       {route === "selectRecipient" && (
         <SelectRecipientScreen
-          suggestions={INITIAL_CONTACTS}
           defaultValue={recipientDraft}
           viewerName={viewerName}
           onSelect={handleSelectRecipient}
@@ -1689,13 +2358,24 @@ const MoonCodeApp = () => {
           message={messageText}
           onChange={setMessageText}
           onSend={handleSendMessage}
+          onSealed={(envelopeRect) => {
+            setSealedFrom(envelopeRect);
+            setRoute("messageSent");
+          }}
           onBack={() => setRoute("selectRecipient")}
+          currentPhase={currentPhase}
           viewerName={viewerName}
         />
       )}
 
       {route === "messageSent" && (
-        <MessageSentScreen recipient={recipient} onDone={handleMessageSentComplete} />
+        <MessageSentScreen
+          from={sealedFrom}
+          recipient={recipient}
+          currentPhase={currentPhase}
+          moon={moon}
+          onDone={handleMessageSentComplete}
+        />
       )}
 
       {route === "unlockCapture" && (
@@ -1718,8 +2398,7 @@ const MoonCodeApp = () => {
                 setMessages((prev) => prev.map((m) => (m.id === mapped.id ? mapped : m)));
                 setRoute("printing");
               } catch (e) {
-                console.error(e);
-                alert("Failed to unlock message (check Supabase + RLS).");
+                showSupabaseError(e, "Failed to unlock message (check Supabase + RLS).");
               }
             })();
           }}
@@ -1734,9 +2413,21 @@ const MoonCodeApp = () => {
 
       {showNav && (
         <BottomNav
-          current={route === "compose" || route === "selectRecipient" ? "send" : route}
+          current={route}
           onSelect={setRoute}
           onSend={handleStartSend}
+        />
+      )}
+
+      {route === "inbox" && openedStories?.viewer === viewerName && (
+        <OpenedStories
+          items={openedStories.items}
+          onSeen={(id) => markOpenedSeen(viewerName, id)}
+          onClose={() => setOpenedStories(null)}
+          onArchive={() => {
+            setOpenedStories(null);
+            setRoute("gallery");
+          }}
         />
       )}
     </div>
