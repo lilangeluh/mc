@@ -261,30 +261,21 @@ textarea {
   animation: navIn 0.6s var(--ease) both;
 }
 
+/* icon-only tabs that never change size; the active one gets a soft disc */
 .nav-item {
   position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  width: 48px;
   height: 48px;
-  padding: 0 13px;
-  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
   color: var(--ink-3);
-  transition: color 0.2s ease, background 0.2s ease, padding 0.3s var(--ease);
-}
-
-/* five tabs don't fit with labels, so only the active one shows its name */
-.nav-item .nav-label {
-  display: none;
+  transition: color 0.2s ease, background 0.2s ease;
 }
 
 .nav-item.is-active {
-  padding: 0 16px;
-}
-
-.nav-item.is-active .nav-label {
-  display: inline;
-  animation: fadeIn 0.3s ease both;
+  color: var(--ink);
+  background: var(--paper);
 }
 
 .nav-badge {
@@ -301,12 +292,6 @@ textarea {
 .nav-item.is-active {
   color: var(--ink);
   background: var(--paper);
-}
-
-.nav-label {
-  font-size: 10.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
 }
 
 .nav-compose {
@@ -453,10 +438,6 @@ textarea {
   margin-top: 8px;
 }
 
-.onboard-foot {
-  text-align: center;
-}
-
 /* ---------- Sign-up steps ---------- */
 
 .setup {
@@ -481,12 +462,6 @@ textarea {
   padding-top: 20px;
 }
 
-.setup-links {
-  display: flex;
-  justify-content: center;
-  gap: 24px;
-}
-
 .setup--done {
   justify-content: space-between;
   padding-top: 10vh;
@@ -498,10 +473,21 @@ textarea {
   line-height: 1.6;
 }
 
+.signin-prompt {
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+.signin-prompt .link {
+  color: var(--ink);
+  text-decoration-color: var(--ink-3);
+}
+
 .onboard-actions {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 18px;
   margin: auto 0;
   padding: 40px 0 28px;
 }
@@ -721,14 +707,152 @@ textarea {
   border: 1px solid var(--rule);
 }
 
-.profile-section {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
+/* ---------- You: identity card + settings ---------- */
+
+.id-card {
+  position: relative;
+  margin-top: 8px;
+  padding: 24px 22px 0;
+  background: var(--sheet);
+  border: 1px solid var(--rule-soft);
+  border-radius: 6px;
+  box-shadow: 0 1px 0 rgba(20, 20, 20, 0.03), 0 28px 50px -34px rgba(20, 20, 20, 0.4);
+  overflow: hidden;
+  animation: unroll 0.9s var(--ease) both;
 }
 
-.profile-logout {
-  margin-top: 12px;
+.postmark {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 92px;
+  height: 92px;
+  transform: rotate(-12deg);
+  opacity: 0.7;
+  animation: fadeIn 0.6s 0.5s ease both;
+}
+
+.postmark circle {
+  fill: none;
+  stroke: var(--ink-2);
+  stroke-width: 1;
+}
+
+.postmark text {
+  fill: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 7.5px;
+  letter-spacing: 0.18em;
+}
+
+.postmark .postmark-moon {
+  fill: var(--ink-2);
+  stroke: none;
+}
+
+.id-name {
+  max-width: calc(100% - 96px);
+  margin-top: 30px;
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(38px, 11vw, 52px);
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
+.id-handle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 4px 0;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.id-handle .mono-label {
+  font-size: 9.5px;
+  text-decoration: underline;
+  text-decoration-color: var(--rule);
+  text-underline-offset: 3px;
+}
+
+.id-facts {
+  margin-top: 22px;
+  padding: 14px 0;
+  border-top: 1px dashed var(--rule);
+}
+
+.id-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0 -22px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.id-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 0 16px;
+  text-align: center;
+}
+
+.id-stats > div + div {
+  border-left: 1px solid var(--rule-soft);
+}
+
+.id-stat {
+  font-family: var(--serif);
+  font-size: 28px;
+  line-height: 1;
+}
+
+.settings {
+  margin-top: 40px;
+}
+
+.settings-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  text-align: left;
+}
+
+.settings-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--serif);
+  font-size: 20px;
+  white-space: nowrap;
+}
+
+.settings-edit {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  animation: fadeIn 0.25s ease both;
+}
+
+.settings-edit > .link {
+  margin-top: 10px;
+}
+
+.settings .toggle {
+  border-top: 0;
+}
+
+.settings-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  margin-top: 28px;
 }
 
 .app-loading {

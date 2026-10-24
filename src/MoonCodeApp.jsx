@@ -1262,9 +1262,10 @@ const IconFriends = () => (
   </Icon>
 );
 
-const IconMoonUser = () => (
+const IconUser = () => (
   <Icon>
-    <path d="M15.5 4.6a7.5 7.5 0 1 0 3.9 11.2 6 6 0 0 1-3.9-11.2z" />
+    <circle cx="12" cy="8.5" r="3.6" />
+    <path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6" />
   </Icon>
 );
 
@@ -1273,7 +1274,7 @@ const NAV_ITEMS = [
   { route: "friends", label: "Friends", icon: IconFriends },
   null, // the pen sits in the middle
   { route: "gallery", label: "Archive", icon: IconLetter },
-  { route: "profile", label: "You", icon: IconMoonUser },
+  { route: "profile", label: "You", icon: IconUser },
 ];
 
 const BottomNav = ({ current, onSelect, onSend, badges = {} }) => (
@@ -1287,7 +1288,6 @@ const BottomNav = ({ current, onSelect, onSend, badges = {} }) => (
           aria-label={item.label}
         >
           <item.icon />
-          <span className="nav-label">{item.label}</span>
           {badges[item.route] ? <i className="nav-badge" aria-label="New" /> : null}
         </button>
       ) : (
@@ -1533,7 +1533,6 @@ const OnboardingFlow = ({
       {step === "welcome" && (
         <WelcomeStep
           moon={moon}
-          currentPhase={currentPhase}
           invite={invite}
           onSignUp={() => setAuthStep("signup")}
           onSignIn={() => setAuthStep("signin")}
@@ -1563,13 +1562,8 @@ const OnboardingFlow = ({
   );
 };
 
-const WelcomeStep = ({ moon, currentPhase, invite, onSignUp, onSignIn }) => (
+const WelcomeStep = ({ moon, invite, onSignUp, onSignIn }) => (
   <>
-    <div className="home-meta">
-      <span className="mono-label">Mooncode</span>
-      <span className="mono-label">{formatDayStamp(new Date())}</span>
-    </div>
-
     <div className="onboard-hero stagger">
       <StitchMoon fraction={moon.fraction} size={200} cell={5} />
       <h1 className="display">
@@ -1586,16 +1580,15 @@ const WelcomeStep = ({ moon, currentPhase, invite, onSignUp, onSignIn }) => (
 
     <div className="onboard-actions stagger">
       <button className="btn btn--ink btn--block" onClick={onSignUp}>
-        Create account <IconArrow />
+        Create account
       </button>
-      <button className="btn btn--line btn--block" onClick={onSignIn}>
-        I have an account
-      </button>
+      <p className="signin-prompt">
+        Have an account?{" "}
+        <button className="link" onClick={onSignIn}>
+          Sign in
+        </button>
+      </p>
     </div>
-
-    <p className="mono-label onboard-foot">
-      Tonight · {currentPhase.name} · {Math.round(moon.illumination * 100)}% lit
-    </p>
   </>
 );
 
@@ -1681,18 +1674,22 @@ const AccountStep = ({ mode, onBack, onSwitch }) => {
       </div>
       <div className="setup-foot">
         <button type="submit" className="btn btn--ink btn--block" disabled={busy}>
-          {busy ? "One moment…" : signUp ? "Continue" : "Sign in"} {!busy && <IconArrow />}
+          {busy ? "One moment…" : signUp ? "Continue" : "Sign in"}
         </button>
-        <div className="setup-links">
-          <button type="button" className="mono-label link" onClick={onSwitch}>
-            {signUp ? "I have an account" : "Create an account"}
+        <p className="signin-prompt">
+          {signUp ? "Have an account? " : "New here? "}
+          <button type="button" className="link" onClick={onSwitch}>
+            {signUp ? "Sign in" : "Create an account"}
           </button>
           {!signUp && (
-            <button type="button" className="mono-label link" onClick={resetPassword}>
-              Forgot password
-            </button>
+            <>
+              {" · "}
+              <button type="button" className="link" onClick={resetPassword}>
+                Forgot password
+              </button>
+            </>
           )}
-        </div>
+        </p>
       </div>
     </form>
   );
@@ -1777,7 +1774,7 @@ const NameStep = ({ userId, onCreated }) => {
       </div>
       <div className="setup-foot">
         <button type="submit" className="btn btn--ink btn--block" disabled={busy || !name.trim() || !handleValid}>
-          {busy ? "Checking…" : "Continue"} {!busy && <IconArrow />}
+          {busy ? "Checking…" : "Continue"}
         </button>
       </div>
     </form>
@@ -1817,7 +1814,7 @@ const LocationStep = ({ userId, onSaved }) => {
       </div>
       <div className="setup-foot">
         <button type="submit" className="btn btn--ink btn--block" disabled={busy || !city}>
-          {busy ? "Saving…" : "Continue"} {!busy && <IconArrow />}
+          {busy ? "Saving…" : "Continue"}
         </button>
       </div>
     </form>
@@ -1842,7 +1839,7 @@ const FriendsStep = ({ me, friendships, onChanged, onContinue }) => {
       </div>
       <div className="setup-foot">
         <button className="btn btn--ink btn--block" onClick={onContinue}>
-          {pending.length ? "Continue" : "Skip for now"} <IconArrow />
+          {pending.length ? "Continue" : "Skip for now"}
         </button>
       </div>
     </div>
@@ -1862,7 +1859,7 @@ const DoneStep = ({ name, moon, currentPhase, onEnter }) => (
     </div>
     <div className="setup-foot">
       <button className="btn btn--ink btn--block" onClick={onEnter}>
-        Enter <IconArrow />
+        Enter
       </button>
     </div>
   </div>
@@ -1935,7 +1932,6 @@ const FriendsScreen = ({ me, friendships, onChanged, onWrite }) => {
   return (
     <div className="app-shell app-shell--nav">
       <header className="archive-head">
-        <p className="mono-label">Friends · {pad2(friends.length)}</p>
         <h1 className="display display--fit">
           Who you <em>write to.</em>
         </h1>
@@ -2021,48 +2017,153 @@ const FriendsScreen = ({ me, friendships, onChanged, onWrite }) => {
   );
 };
 
-const ProfileScreen = ({ profile, location, onLocationSaved, onLogout }) => {
-  const [city, setCity] = useState(
-    location ? { label: location.city, timezone: location.timezone, lat: location.lat, lon: location.lon } : null
+// A round postmark: city across the top, date across the bottom, a crescent in the middle
+const Postmark = ({ city, date }) => {
+  const id = useId();
+  return (
+    <svg className="postmark" viewBox="0 0 100 100" aria-hidden="true">
+      <defs>
+        <path id={`${id}-top`} d="M 18 50 A 32 32 0 0 1 82 50" />
+        <path id={`${id}-bottom`} d="M 15 50 A 35 35 0 0 0 85 50" />
+        <mask id={`${id}-moon`}>
+          <circle cx="50" cy="50" r="9" fill="#fff" />
+          <circle cx="54.5" cy="47.5" r="7.8" fill="#000" />
+        </mask>
+      </defs>
+      <circle cx="50" cy="50" r="46" />
+      <circle cx="50" cy="50" r="41" strokeDasharray="1.5 2.5" />
+      <text>
+        <textPath href={`#${id}-top`} startOffset="50%" textAnchor="middle">
+          {city.toUpperCase()}
+        </textPath>
+      </text>
+      <text>
+        <textPath href={`#${id}-bottom`} startOffset="50%" textAnchor="middle">
+          {date.toUpperCase()}
+        </textPath>
+      </text>
+      <circle cx="50" cy="50" r="9" className="postmark-moon" mask={`url(#${id}-moon)`} />
+    </svg>
   );
-  const [share, setShare] = useState(location?.share_with_friends ?? true);
-  const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const changed = city && (city.label !== location?.city || share !== location?.share_with_friends);
+};
 
-  const save = async () => {
-    setBusy(true);
+const ProfileScreen = ({ profile, location, stats, onLocationSaved, onLogout }) => {
+  const [editingCity, setEditingCity] = useState(false);
+  const [status, setStatus] = useState("");
+  const [copied, setCopied] = useState(false);
+  const city = location
+    ? { label: location.city, timezone: location.timezone, lat: location.lat, lon: location.lon }
+    : null;
+  const share = location?.share_with_friends ?? true;
+  const since = profile.created_at
+    ? new Date(profile.created_at).toLocaleDateString("en-US", { month: "short", year: "numeric" })
+    : "";
+
+  // changes save as they're made; a short note confirms it
+  const save = async (nextCity, nextShare) => {
+    setStatus("Saving…");
     try {
-      onLocationSaved(await saveLocation(profile.id, city, share));
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      onLocationSaved(await saveLocation(profile.id, nextCity, nextShare));
+      setStatus("Saved");
+      setTimeout(() => setStatus(""), 1800);
     } catch (e) {
-      showSupabaseError(e);
-    } finally {
-      setBusy(false);
+      setStatus("");
+      showSupabaseError(e, "Couldn't save that.");
+    }
+  };
+
+  const copyHandle = async () => {
+    try {
+      await navigator.clipboard.writeText(`@${profile.handle}`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // clipboard unavailable
     }
   };
 
   return (
     <div className="app-shell app-shell--nav">
-      <header className="archive-head">
-        <p className="mono-label">@{profile.handle}</p>
-        <h1 className="display display--fit">{profile.display_name}</h1>
-      </header>
-
-      <section className="profile-section stagger">
-        <CityField id="mc-profile-city" label="Where you watch the moon" value={city} onChange={setCity} />
-        <Toggle checked={share} onChange={setShare} label="Let friends see my city" />
-        <button className="btn btn--ink btn--block" onClick={save} disabled={!changed || busy}>
-          {saved ? "Saved" : busy ? "Saving…" : "Save"}
+      <article className="id-card">
+        <Postmark city={cityName(location?.city) || "Mooncode"} date={formatDayStamp(new Date())} />
+        <p className="mono-label">Mooncode</p>
+        <h1 className="id-name">{profile.display_name}</h1>
+        <button className="id-handle" onClick={copyHandle} aria-label={`Copy @${profile.handle}`}>
+          @{profile.handle}
+          <span className="mono-label">{copied ? "Copied" : "Copy"}</span>
         </button>
-      </section>
 
-      <section className="list-section">
-        <InviteButton handle={profile.handle} />
-        <button className="btn btn--line btn--block profile-logout" onClick={onLogout}>
-          Log out
-        </button>
+        <dl className="readout id-facts">
+          <dt>Sky</dt>
+          <dd>{cityName(location?.city) || "—"}</dd>
+          <dt>Local</dt>
+          <dd>{formatLocalTime(location?.timezone) || "—"}</dd>
+          {since && (
+            <>
+              <dt>Since</dt>
+              <dd>{since}</dd>
+            </>
+          )}
+        </dl>
+
+        <div className="id-stats">
+          <div>
+            <span className="id-stat">{stats.sent}</span>
+            <span className="mono-label">Sent</span>
+          </div>
+          <div>
+            <span className="id-stat">{stats.received}</span>
+            <span className="mono-label">Received</span>
+          </div>
+          <div>
+            <span className="id-stat">{stats.friends}</span>
+            <span className="mono-label">Friends</span>
+          </div>
+        </div>
+      </article>
+
+      <section className="settings">
+        <header className="list-head">
+          <h2 className="mono-label">Settings</h2>
+          <span className="mono-label" aria-live="polite">
+            {status}
+          </span>
+        </header>
+
+        {editingCity ? (
+          <div className="settings-edit">
+            <CityField
+              id="mc-profile-city"
+              label="Where you watch the moon"
+              value={city}
+              onChange={(next) => {
+                if (!next || next.label === city?.label) return;
+                save(next, share);
+                setEditingCity(false);
+              }}
+            />
+            <button className="mono-label link" onClick={() => setEditingCity(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button className="settings-row" onClick={() => setEditingCity(true)}>
+            <span className="mono-label">Where you watch the moon</span>
+            <span className="settings-value">
+              {cityName(location?.city) || "Add your city"}
+              <IconArrow />
+            </span>
+          </button>
+        )}
+
+        <Toggle checked={share} onChange={(next) => city && save(city, next)} label="Let friends see my city" />
+
+        <div className="settings-actions">
+          <InviteButton handle={profile.handle} />
+          <button className="mono-label link" onClick={onLogout}>
+            Log out
+          </button>
+        </div>
       </section>
     </div>
   );
@@ -2719,9 +2820,6 @@ const GalleryScreen = ({ messages }) => {
   return (
     <div className="app-shell app-shell--nav">
       <header className="archive-head">
-        <p className="mono-label">
-          Archive · {pad2(galleryItems.length)} {galleryItems.length === 1 ? "letter" : "letters"}
-        </p>
         <h1 className="display display--fit">
           Two moons, <em>one letter.</em>
         </h1>
@@ -3377,7 +3475,17 @@ const MoonCodeApp = () => {
       )}
 
       {route === "profile" && (
-        <ProfileScreen profile={profile} location={myLocation} onLocationSaved={updateLocation} onLogout={handleLogout} />
+        <ProfileScreen
+          profile={profile}
+          location={myLocation}
+          stats={{
+            sent: messages.filter((m) => m.from === "You").length,
+            received: messages.filter((m) => m.from !== "You").length,
+            friends: friends.length,
+          }}
+          onLocationSaved={updateLocation}
+          onLogout={handleLogout}
+        />
       )}
 
       {route === "sendCapture" && (
