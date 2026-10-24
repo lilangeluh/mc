@@ -413,7 +413,20 @@ textarea {
   width: var(--moon-size);
   height: auto;
   aspect-ratio: 1;
-  color: var(--ink);
+  /* a softer charcoal than the text ink */
+  color: #3d3a36;
+}
+
+/* sideways drags spin the moon; vertical ones still scroll the page */
+.threshold-moon.is-spinnable {
+  cursor: grab;
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.threshold-moon.is-spinnable:active {
+  cursor: grabbing;
 }
 
 /* ---------- Onboarding ---------- */

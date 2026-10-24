@@ -1001,43 +1001,52 @@ function loadMoonMap() {
 
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
-// Brightness of each pixel of the lit near side (0 = shadow, 1 = bright highland); -1 outside the disc
-function computeMoonLight(map, fraction, px) {
+// Per-pixel geometry of the disc, worked out once: where each pixel lands on the moon map, and how
+// much sunlight it gets. Spinning only shifts longitude, so a frame is just lookups.
+function computeMoonGeometry(map, fraction, px) {
   const theta = 2 * Math.PI * fraction;
   const sun = [Math.sin(theta), 0, -Math.cos(theta)];
   const r = px / 2;
-  const light = new Float32Array(px * px).fill(-1);
+  const lon = new Float32Array(px * px);
+  const row = new Int32Array(px * px);
+  const shade = new Float32Array(px * px).fill(-1); // -1 = outside the disc
 
-  for (let row = 0; row < px; row++) {
-    for (let col = 0; col < px; col++) {
-      const x = (col + 0.5 - r) / r;
-      const y = (row + 0.5 - r) / r;
+  for (let py = 0; py < px; py++) {
+    for (let pxi = 0; pxi < px; pxi++) {
+      const x = (pxi + 0.5 - r) / r;
+      const y = (py + 0.5 - r) / r;
       const d2 = x * x + y * y;
       if (d2 > 1) continue;
       const z = Math.sqrt(1 - d2);
-
-      const lat = Math.asin(-y);
-      const lon = Math.atan2(x, z);
-      const u = Math.floor((0.5 + lon / (2 * Math.PI)) * (map.w - 1));
-      const v = Math.floor((0.5 - lat / Math.PI) * (map.h - 1));
-      const albedo = clamp01((map.gray[v * map.w + u] - 0.3) / 0.45);
-
+      const i = py * px + pxi;
+      lon[i] = Math.atan2(x, z);
+      row[i] = Math.floor((0.5 - Math.asin(-y) / Math.PI) * (map.h - 1)) * map.w;
       // nearly flat-lit until close to the terminator, with a touch of limb darkening so the edge holds
       const mu0 = x * sun[0] + y * sun[1] + z * sun[2];
       const lit = mu0 > 0 ? Math.pow(clamp01(mu0 * 5), 0.6) : 0;
-      light[row * px + col] = lit * (0.25 + 0.75 * albedo) * (0.78 + 0.22 * z);
+      shade[i] = lit * (0.78 + 0.22 * z);
     }
   }
-  return light;
+  return { lon, row, shade };
+}
+
+const albedoCache = new WeakMap();
+function albedoOf(map) {
+  if (!albedoCache.has(map)) albedoCache.set(map, map.gray.map((g) => 0.25 + 0.75 * clamp01((g - 0.3) / 0.45)));
+  return albedoCache.get(map);
 }
 
 const THRESHOLD = 0.56;
 const GRAIN = 0.16;
+const TWO_PI = Math.PI * 2;
 
 // Real lunar surface, lit for tonight's phase, run through a threshold: every pixel is ink or paper.
-// On load the threshold sweeps up, so the darkest areas ink in first.
-const ThresholdMoon = ({ fraction = 0.5, size = 232, className = "" }) => {
+// On load the threshold sweeps up, so the darkest areas ink in first. With `spinnable`, a sideways
+// drag turns the moon like a globe; it coasts, then settles back to the face we actually see.
+const ThresholdMoon = ({ fraction = 0.5, size = 232, spinnable = false, className = "" }) => {
   const canvasRef = useRef(null);
+  const spin = useRef({ rot: 0, vel: 0, dragging: false, lastX: 0, lastT: 0, releasedAt: 0 });
+  const kickRef = useRef(() => {});
 
   useEffect(() => {
     let alive = true;
@@ -1053,22 +1062,26 @@ const ThresholdMoon = ({ fraction = 0.5, size = 232, className = "" }) => {
         const ctx = canvas.getContext("2d");
         const [ir, ig, ib] = (getComputedStyle(canvas).color.match(/\d+/g) || [20, 20, 20]).map(Number);
 
-        const light = computeMoonLight(map, fraction, px);
-        const grain = new Float32Array(light.length);
+        const { lon, row, shade } = computeMoonGeometry(map, fraction, px);
+        const albedo = albedoOf(map);
+        const grain = new Float32Array(shade.length);
         for (let i = 0; i < grain.length; i++) grain[i] = (Math.random() - 0.5) * 2 * GRAIN;
 
         const image = ctx.createImageData(px, px);
         const data = image.data;
-        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        const start = performance.now();
-        const duration = 1200;
+        const uScale = (map.w - 1) / TWO_PI;
 
-        const frame = (now) => {
-          const t = reduceMotion ? 1 : Math.min(1, (now - start) / duration);
-          const level = THRESHOLD * (1 - Math.pow(1 - t, 3));
-          for (let i = 0; i < light.length; i++) {
+        const draw = (level, rot) => {
+          for (let i = 0; i < shade.length; i++) {
             const k = i * 4;
-            if (light[i] >= 0 && light[i] + grain[i] < level) {
+            if (shade[i] < 0) {
+              data[k + 3] = 0;
+              continue;
+            }
+            let l = lon[i] + rot + Math.PI;
+            l -= Math.floor(l / TWO_PI) * TWO_PI;
+            const b = shade[i] * albedo[row[i] + Math.floor(l * uScale)];
+            if (b + grain[i] < level) {
               data[k] = ir;
               data[k + 1] = ig;
               data[k + 2] = ib;
@@ -1078,24 +1091,103 @@ const ThresholdMoon = ({ fraction = 0.5, size = 232, className = "" }) => {
             }
           }
           ctx.putImageData(image, 0, 0);
-          if (t < 1) raf = requestAnimationFrame(frame);
         };
-        raf = requestAnimationFrame(frame);
+
+        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const start = performance.now();
+        const develop = reduceMotion ? 0 : 1200;
+        const state = spin.current;
+        let running = false;
+
+        const frame = (now) => {
+          const t = develop ? Math.min(1, (now - start) / develop) : 1;
+          const level = THRESHOLD * (1 - Math.pow(1 - t, 3));
+
+          let moving = state.dragging;
+          if (!state.dragging) {
+            if (Math.abs(state.vel) > 0.0004) {
+              // coast after a flick
+              state.rot += state.vel;
+              state.vel *= 0.94;
+              state.releasedAt = now;
+              moving = true;
+            } else if (state.rot !== 0 && now - state.releasedAt > 1200) {
+              // then ease back to tonight's face (the nearest whole turn)
+              const home = Math.round(state.rot / TWO_PI) * TWO_PI;
+              state.rot += (home - state.rot) * 0.06;
+              if (Math.abs(home - state.rot) < 0.0008) state.rot = 0;
+              moving = true;
+            } else if (state.rot !== 0) {
+              moving = true; // waiting out the pause before settling
+            }
+          }
+
+          draw(level, state.rot);
+          if (t < 1 || moving) {
+            raf = requestAnimationFrame(frame);
+          } else {
+            running = false;
+          }
+        };
+
+        kickRef.current = () => {
+          if (running || !alive) return;
+          running = true;
+          raf = requestAnimationFrame(frame);
+        };
+        kickRef.current();
       })
       .catch((err) => console.error("Moon map failed to load", err));
 
     return () => {
       alive = false;
       cancelAnimationFrame(raf);
+      kickRef.current = () => {};
     };
   }, [fraction, size]);
+
+  const radius = () => (canvasRef.current?.getBoundingClientRect().width || size) / 2;
+
+  const dragProps = spinnable
+    ? {
+        onPointerDown: (e) => {
+          const state = spin.current;
+          state.dragging = true;
+          state.vel = 0;
+          state.lastX = e.clientX;
+          state.lastT = performance.now();
+          e.currentTarget.setPointerCapture(e.pointerId);
+          kickRef.current();
+        },
+        onPointerMove: (e) => {
+          const state = spin.current;
+          if (!state.dragging) return;
+          const now = performance.now();
+          // dragging right turns the near side to the right
+          const delta = -(e.clientX - state.lastX) / radius();
+          state.rot += delta;
+          state.vel = delta / Math.max(1, (now - state.lastT) / 16.7);
+          state.lastX = e.clientX;
+          state.lastT = now;
+        },
+        onPointerUp: () => {
+          spin.current.dragging = false;
+          spin.current.releasedAt = performance.now();
+        },
+        onPointerCancel: () => {
+          spin.current.dragging = false;
+          spin.current.releasedAt = performance.now();
+        },
+      }
+    : {};
 
   return (
     <canvas
       ref={canvasRef}
-      className={`threshold-moon ${className}`}
+      className={`threshold-moon ${spinnable ? "is-spinnable" : ""} ${className}`}
       style={{ "--moon-size": `${size}px` }}
       aria-hidden="true"
+      {...dragProps}
     />
   );
 };
@@ -1525,7 +1617,7 @@ const OnboardingFlow = ({
 const WelcomeStep = ({ moon, invite, onSignUp, onSignIn }) => (
   <>
     <div className="onboard-hero stagger">
-      <ThresholdMoon fraction={moon.fraction} size={200} />
+      <ThresholdMoon fraction={moon.fraction} size={200} spinnable />
       <h1 className="display">
         Letters sealed
         <br />
@@ -1810,7 +1902,7 @@ const FriendsStep = ({ me, friendships, onChanged, onContinue }) => {
 const DoneStep = ({ name, moon, currentPhase, onEnter }) => (
   <div className="setup setup--done">
     <div className="onboard-hero stagger">
-      <ThresholdMoon fraction={moon.fraction} size={200} />
+      <ThresholdMoon fraction={moon.fraction} size={200} spinnable />
       <h1 className="display">
         You're all set, <em>{name}.</em>
       </h1>
@@ -2183,7 +2275,7 @@ const InboxScreen = ({
       {travel && <TravelCard {...travel} />}
 
       <section className="moon-panel" aria-label="Tonight's moon">
-        <ThresholdMoon fraction={moon.fraction} size={232} />
+        <ThresholdMoon fraction={moon.fraction} size={232} spinnable />
         <p className="mono-label">Tonight</p>
         <p className="moon-name">{moonPhaseLoading ? "Reading the sky…" : currentPhase.name}</p>
 
