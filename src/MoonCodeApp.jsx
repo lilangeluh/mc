@@ -8,17 +8,11 @@ import moonMapUrl from "./assets/moon_map.jpg";
  *  Helpers: Supabase I/O
  *  --------------------------*/
 
-function pgQuote(value) {
-  const v = String(value ?? "").replace(/"/g, '\\"');
-  return `"${v}"`;
-}
-
-async function fetchMessagesForUser(userName) {
-  const u = userName.trim();
+async function fetchMessagesForUser(userId) {
   const { data, error } = await supabase
     .from("messages")
     .select("*")
-    .or(`sender.eq.${pgQuote(u)},recipient.eq.${pgQuote(u)}`)
+    .or(`sender_id.eq.${userId},recipient_id.eq.${userId}`)
     .order("created_at", { ascending: false });
 
   if (error) throw error;
@@ -29,8 +23,11 @@ async function insertMessage({ sender, recipient, body, sendPhoto }) {
   const { data, error } = await supabase
     .from("messages")
     .insert({
-      sender,
-      recipient,
+      sender_id: sender.id,
+      recipient_id: recipient.id,
+      // names are kept as a snapshot so letters still read well if someone renames
+      sender: sender.name,
+      recipient: recipient.name,
       body,
       locked: true,
       send_photo: sendPhoto ?? null,
@@ -58,9 +55,16 @@ async function unlockMessage({ id, receivePhoto }) {
   return data;
 }
 
-function mapRowToMessage(row, viewerName) {
-  const viewer = viewerName?.trim() || "You";
-  const isSender = row.sender === viewer;
+async function markOpenedLetterSeen(id) {
+  const { error } = await supabase
+    .from("messages")
+    .update({ sender_seen_opened_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) console.error("markOpenedLetterSeen", error);
+}
+
+function mapRowToMessage(row, viewerId) {
+  const isSender = row.sender_id === viewerId;
 
   return {
     id: row.id,
@@ -73,6 +77,7 @@ function mapRowToMessage(row, viewerName) {
     sendPhoto: row.send_photo ?? null,
     receivePhoto: row.receive_photo ?? null,
     archived: !!row.receive_photo,
+    senderSeenOpenedAt: row.sender_seen_opened_at ?? null,
     rawSender: row.sender,
     rawRecipient: row.recipient,
   };
@@ -80,38 +85,170 @@ function mapRowToMessage(row, viewerName) {
 
 function showSupabaseError(e, fallback = "Supabase error") {
   console.error(e);
+  alert(describeError(e, fallback));
+}
+
+function describeError(e, fallback = "Something went wrong") {
   if (e instanceof TypeError || /failed to fetch|load failed|network/i.test(e?.message || "")) {
-    alert("Couldn't reach the mailbox. The Supabase project may be paused — restore it from the Supabase dashboard.");
-    return;
+    return "Couldn't reach the mailbox. Check your connection — or the Supabase project may be paused.";
   }
-  const msg =
-    e?.message ||
-    e?.error_description ||
-    e?.details ||
-    (typeof e === "string" ? e : null) ||
-    fallback;
-  alert(msg);
+  return e?.message || e?.error_description || e?.details || (typeof e === "string" ? e : null) || fallback;
 }
 
 /** ---------------------------
- *  Exhibition Lock (case-sensitive)
- *  Only affects exactly "Person A" and "Person B"
+ *  Helpers: accounts, friends, cities
  *  --------------------------*/
 
-const EXHIBITION_A = "Person A";
-const EXHIBITION_B = "Person B";
+const HANDLE_PATTERN = /^[a-z0-9_]{3,20}$/;
 
-const EXHIBITION_MESSAGE =
-  "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.";
-
-function isExhibitionUser(name = "") {
-  return name === EXHIBITION_A || name === EXHIBITION_B;
+async function fetchProfile(userId) {
+  const { data, error } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
+  if (error) throw error;
+  return data;
 }
 
-function getLockedCounterparty(name = "") {
-  if (name === EXHIBITION_A) return EXHIBITION_B;
-  if (name === EXHIBITION_B) return EXHIBITION_A;
-  return null;
+async function isHandleTaken(handle) {
+  const { data, error } = await supabase.from("profiles").select("id").eq("handle", handle).maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
+async function createProfile({ id, handle, displayName }) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .insert({ id, handle, display_name: displayName })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function fetchLocation(userId) {
+  const { data, error } = await supabase.from("profile_locations").select("*").eq("profile_id", userId).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function saveLocation(userId, city, shareWithFriends) {
+  const { data, error } = await supabase
+    .from("profile_locations")
+    .upsert({
+      profile_id: userId,
+      city: city.label,
+      timezone: city.timezone,
+      lat: city.lat,
+      lon: city.lon,
+      share_with_friends: shareWithFriends,
+      updated_at: new Date().toISOString(),
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function searchProfiles(query, myId) {
+  const q = query.trim().replace(/^@/, "").replace(/[%_,()]/g, "");
+  if (q.length < 2) return [];
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, handle, display_name")
+    .or(`handle.ilike.${q}%,display_name.ilike.%${q}%`)
+    .neq("id", myId)
+    .limit(8);
+  if (error) throw error;
+  return data ?? [];
+}
+
+async function fetchProfileByHandle(handle) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, handle, display_name")
+    .eq("handle", handle.toLowerCase())
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+// All friendships involving me, with the other person's profile and (if shared) their city
+async function fetchFriendships(myId) {
+  const { data, error } = await supabase
+    .from("friendships")
+    .select(
+      "id, status, requester_id, addressee_id, created_at, requester:profiles!friendships_requester_id_fkey(id, handle, display_name), addressee:profiles!friendships_addressee_id_fkey(id, handle, display_name)"
+    )
+    .or(`requester_id.eq.${myId},addressee_id.eq.${myId}`);
+  if (error) throw error;
+
+  const rows = (data ?? []).map((f) => {
+    const other = f.requester_id === myId ? f.addressee : f.requester;
+    return {
+      id: f.id,
+      status: f.status,
+      incoming: f.addressee_id === myId,
+      profile: { id: other.id, handle: other.handle, name: other.display_name },
+    };
+  });
+
+  const friendIds = rows.filter((r) => r.status === "accepted").map((r) => r.profile.id);
+  if (friendIds.length) {
+    const { data: locations } = await supabase
+      .from("profile_locations")
+      .select("profile_id, city, timezone, lat, lon")
+      .in("profile_id", friendIds);
+    for (const loc of locations ?? []) {
+      const row = rows.find((r) => r.profile.id === loc.profile_id);
+      if (row) row.location = loc;
+    }
+  }
+  return rows;
+}
+
+async function sendFriendRequest(myId, otherId) {
+  const { error } = await supabase.from("friendships").insert({ requester_id: myId, addressee_id: otherId });
+  // a request between the two already exists — nothing to do
+  if (error && error.code !== "23505") throw error;
+}
+
+async function acceptFriendRequest(id) {
+  const { error } = await supabase
+    .from("friendships")
+    .update({ status: "accepted", accepted_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+async function removeFriendship(id) {
+  const { error } = await supabase.from("friendships").delete().eq("id", id);
+  if (error) throw error;
+}
+
+const inviteLinkFor = (handle) => `${window.location.origin}${import.meta.env.BASE_URL}?invite=${handle}`;
+
+// Picks up ?invite=handle from the URL once, and keeps it until the visitor has an account
+const INVITE_KEY = "mooncode_invite";
+function takeInviteFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const invite = params.get("invite");
+    if (invite && HANDLE_PATTERN.test(invite.toLowerCase())) {
+      sessionStorage.setItem(INVITE_KEY, invite.toLowerCase());
+      params.delete("invite");
+      const rest = params.toString();
+      window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : ""));
+    }
+    return sessionStorage.getItem(INVITE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function clearInvite() {
+  try {
+    sessionStorage.removeItem(INVITE_KEY);
+  } catch {
+    // storage unavailable
+  }
 }
 
 /** ---------------------------
@@ -1116,158 +1253,876 @@ const TopBar = ({ onBack, step, total = 3, dark = false }) => (
   </div>
 );
 
-const BottomNav = ({ current, onSelect, onSend }) => (
+const IconFriends = () => (
+  <Icon>
+    <circle cx="9" cy="8.5" r="3.2" />
+    <path d="M3.5 19c.6-3 2.8-4.8 5.5-4.8s4.9 1.8 5.5 4.8" />
+    <circle cx="16.5" cy="9.5" r="2.5" />
+    <path d="M15.6 14.4c2.3.1 4 1.6 4.6 4.1" />
+  </Icon>
+);
+
+const IconMoonUser = () => (
+  <Icon>
+    <path d="M15.5 4.6a7.5 7.5 0 1 0 3.9 11.2 6 6 0 0 1-3.9-11.2z" />
+  </Icon>
+);
+
+const NAV_ITEMS = [
+  { route: "inbox", label: "Home", icon: IconHome },
+  { route: "friends", label: "Friends", icon: IconFriends },
+  null, // the pen sits in the middle
+  { route: "gallery", label: "Archive", icon: IconLetter },
+  { route: "profile", label: "You", icon: IconMoonUser },
+];
+
+const BottomNav = ({ current, onSelect, onSend, badges = {} }) => (
   <nav className="nav" aria-label="Main">
-    <button
-      className={`nav-item ${current === "inbox" ? "is-active" : ""}`}
-      onClick={() => onSelect("inbox")}
-    >
-      <IconHome />
-      <span className="nav-label">Home</span>
-    </button>
-
-    <button className="nav-compose" onClick={onSend} aria-label="Write a letter" title="Write a letter">
-      <IconPen />
-    </button>
-
-    <button
-      className={`nav-item ${current === "gallery" ? "is-active" : ""}`}
-      onClick={() => onSelect("gallery")}
-    >
-      <IconLetter />
-      <span className="nav-label">Archive</span>
-    </button>
+    {NAV_ITEMS.map((item) =>
+      item ? (
+        <button
+          key={item.route}
+          className={`nav-item ${current === item.route ? "is-active" : ""}`}
+          onClick={() => onSelect(item.route)}
+          aria-label={item.label}
+        >
+          <item.icon />
+          <span className="nav-label">{item.label}</span>
+          {badges[item.route] ? <i className="nav-badge" aria-label="New" /> : null}
+        </button>
+      ) : (
+        <button key="pen" className="nav-compose" onClick={onSend} aria-label="Write a letter" title="Write a letter">
+          <IconPen />
+        </button>
+      )
+    )}
   </nav>
 );
 
-const OnboardingScreen = ({
-  userData,
-  locationQuery,
-  locationSuggestions,
-  locationLoading,
-  onUpdate,
-  onLocationChange,
-  onSelectLocation,
-  onBegin,
+const Toggle = ({ checked, onChange, label }) => (
+  <label className="toggle">
+    <span>{label}</span>
+    <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    <i aria-hidden="true" />
+  </label>
+);
+
+// City search with suggestions plus "Use my location"
+const CityField = ({ id, label, value, onChange }) => {
+  const [query, setQuery] = useState(value?.label || "");
+  const [detecting, setDetecting] = useState(false);
+  const [error, setError] = useState("");
+  const { suggestions, loading } = useCitySearch(query, value?.label || "");
+
+  const pick = (city) => {
+    setQuery(city.label);
+    setError("");
+    onChange(city);
+  };
+
+  const useMyLocation = async () => {
+    setDetecting(true);
+    setError("");
+    try {
+      pick(await detectCurrentCity());
+    } catch (e) {
+      setError(`${e.message} You can search for your city instead.`);
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  return (
+    <div className="field">
+      <label htmlFor={id} className="mono-label">
+        {label}
+      </label>
+      <input
+        id={id}
+        type="text"
+        autoComplete="off"
+        placeholder="City"
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          if (value && e.target.value !== value.label) onChange(null);
+        }}
+      />
+      {suggestions.length > 0 && (
+        <div className="suggest">
+          {suggestions.map((city) => (
+            <button
+              type="button"
+              key={`${city.label}-${city.timezone}`}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(city);
+              }}
+            >
+              <span>{city.label}</span>
+              <small>{city.timezone}</small>
+            </button>
+          ))}
+        </div>
+      )}
+      {loading && <p className="field-hint">Searching cities…</p>}
+      {error && <p className="field-hint field-hint--warn">{error}</p>}
+      <button type="button" className="locate" onClick={useMyLocation} disabled={detecting}>
+        <IconPin />
+        {detecting ? "Finding you…" : "Use my location"}
+      </button>
+    </div>
+  );
+};
+
+const IconPin = () => (
+  <Icon size={16}>
+    <path d="M12 21s-6-5.6-6-11a6 6 0 1 1 12 0c0 5.4-6 11-6 11z" />
+    <circle cx="12" cy="10" r="2.2" />
+  </Icon>
+);
+
+const formatLocalTime = (timezone) => {
+  if (!timezone) return "";
+  try {
+    return new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: timezone });
+  } catch {
+    return "";
+  }
+};
+
+const cityName = (label) => (label ? label.split(",")[0] : "");
+
+// Search people by @handle or name and send requests
+const FriendFinder = ({ me, friendships, onChanged }) => {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [busyId, setBusyId] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try {
+        const found = await searchProfiles(query, me.id);
+        if (alive) setResults(found);
+      } catch (e) {
+        console.error("searchProfiles", e);
+      }
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [query, me.id]);
+
+  const statusFor = (id) => friendships.find((f) => f.profile.id === id);
+
+  const add = async (person) => {
+    setBusyId(person.id);
+    try {
+      await sendFriendRequest(me.id, person.id);
+      await onChanged();
+    } catch (e) {
+      showSupabaseError(e, "Couldn't send the request.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="finder">
+      <input
+        className="finder-input"
+        type="search"
+        placeholder="Search @handle or name"
+        autoComplete="off"
+        autoCapitalize="none"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        aria-label="Search for friends"
+      />
+      {query.trim().length >= 2 && (
+        <div className="finder-results">
+          {results.length === 0 ? (
+            <p className="field-hint">No one by that name yet. Send them your invite link.</p>
+          ) : (
+            results.map((person) => {
+              const existing = statusFor(person.id);
+              return (
+                <div key={person.id} className="person">
+                  <span className="person-main">
+                    <span className="person-name">{person.display_name}</span>
+                    <span className="mono-label">@{person.handle}</span>
+                  </span>
+                  {existing ? (
+                    <span className="mono-label">
+                      {existing.status === "accepted" ? "Friends" : existing.incoming ? "Asked you" : "Requested"}
+                    </span>
+                  ) : (
+                    <button className="chip" onClick={() => add(person)} disabled={busyId === person.id}>
+                      Add
+                    </button>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const InviteButton = ({ handle }) => {
+  const [copied, setCopied] = useState(false);
+  const share = async () => {
+    const url = inviteLinkFor(handle);
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "Mooncode", text: "Write to me under the moon.", url });
+        return;
+      }
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // share sheet dismissed
+    }
+  };
+  return (
+    <button type="button" className="btn btn--line btn--block" onClick={share}>
+      {copied ? "Link copied" : "Share your invite link"}
+    </button>
+  );
+};
+
+/** ---------------------------
+ *  Onboarding: account → name → city → friends → done
+ *  --------------------------*/
+
+const SETUP_STEPS = 4;
+
+const OnboardingFlow = ({
+  session,
+  profile,
+  location,
+  friendships,
+  invite,
+  onProfileCreated,
+  onLocationSaved,
+  onFriendsChanged,
+  onFinished,
   currentPhase,
   moon,
 }) => {
-  const canBegin = userData.name.trim() && userData.location;
+  const [authStep, setAuthStep] = useState("welcome");
+  const [afterFriends, setAfterFriends] = useState(false);
+
+  const step = !session
+    ? authStep
+    : !profile
+    ? "name"
+    : !location
+    ? "location"
+    : afterFriends
+    ? "done"
+    : "friends";
 
   return (
-    <div className="app-shell onboard">
-      <div className="home-meta">
-        <span className="mono-label">Mooncode</span>
-        <span className="mono-label">{formatDayStamp(new Date())}</span>
-      </div>
+    <div className="app-shell onboard" key={step}>
+      {step === "welcome" && (
+        <WelcomeStep
+          moon={moon}
+          currentPhase={currentPhase}
+          invite={invite}
+          onSignUp={() => setAuthStep("signup")}
+          onSignIn={() => setAuthStep("signin")}
+        />
+      )}
+      {(step === "signup" || step === "signin") && (
+        <AccountStep
+          mode={step}
+          onBack={() => setAuthStep("welcome")}
+          onSwitch={() => setAuthStep(step === "signup" ? "signin" : "signup")}
+        />
+      )}
+      {step === "name" && <NameStep userId={session.user.id} onCreated={onProfileCreated} />}
+      {step === "location" && <LocationStep userId={session.user.id} onSaved={onLocationSaved} />}
+      {step === "friends" && (
+        <FriendsStep
+          me={{ id: profile.id, handle: profile.handle }}
+          friendships={friendships}
+          onChanged={onFriendsChanged}
+          onContinue={() => setAfterFriends(true)}
+        />
+      )}
+      {step === "done" && (
+        <DoneStep name={profile.display_name} moon={moon} currentPhase={currentPhase} onEnter={onFinished} />
+      )}
+    </div>
+  );
+};
 
-      <div className="onboard-hero stagger">
-        <StitchMoon fraction={moon.fraction} size={176} cell={5} />
-        <h1 className="display">
-          Letters sealed
-          <br />
-          by <em>moonlight.</em>
-        </h1>
-      </div>
+const WelcomeStep = ({ moon, currentPhase, invite, onSignUp, onSignIn }) => (
+  <>
+    <div className="home-meta">
+      <span className="mono-label">Mooncode</span>
+      <span className="mono-label">{formatDayStamp(new Date())}</span>
+    </div>
 
-      <form
-        className="onboard-form stagger"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (canBegin) onBegin();
-        }}
-      >
+    <div className="onboard-hero stagger">
+      <StitchMoon fraction={moon.fraction} size={200} cell={5} />
+      <h1 className="display">
+        Letters sealed
+        <br />
+        by <em>moonlight.</em>
+      </h1>
+      <p className="field-hint onboard-lede">
+        {invite
+          ? `@${invite} invited you. Write each other letters that open under the moon.`
+          : "Write to the people you miss. They open it under their own moon."}
+      </p>
+    </div>
+
+    <div className="onboard-actions stagger">
+      <button className="btn btn--ink btn--block" onClick={onSignUp}>
+        Create account <IconArrow />
+      </button>
+      <button className="btn btn--line btn--block" onClick={onSignIn}>
+        I have an account
+      </button>
+    </div>
+
+    <p className="mono-label onboard-foot">
+      Tonight · {currentPhase.name} · {Math.round(moon.illumination * 100)}% lit
+    </p>
+  </>
+);
+
+const AccountStep = ({ mode, onBack, onSwitch }) => {
+  const signUp = mode === "signup";
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      if (signUp) {
+        const { data, error: err } = await supabase.auth.signUp({ email: email.trim(), password });
+        if (err) throw err;
+        // with email confirmation on, there's no session until the link is clicked
+        if (!data.session) setNotice("Check your email to confirm your account, then sign in.");
+      } else {
+        const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (err) throw err;
+      }
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetPassword = async () => {
+    if (!email.trim()) {
+      setError("Enter your email first.");
+      return;
+    }
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}${import.meta.env.BASE_URL}`,
+    });
+    if (err) setError(describeError(err));
+    else setNotice("We sent you a link to set a new password.");
+  };
+
+  return (
+    <form className="setup" onSubmit={submit}>
+      <TopBar onBack={onBack} step={signUp ? 1 : null} total={SETUP_STEPS} />
+      <div className="step-body stagger">
+        <p className="mono-label">{signUp ? "Account" : "Welcome back"}</p>
+        <h1 className="display">{signUp ? "Make your account." : "Sign in."}</h1>
+        <div className="field">
+          <label htmlFor="mc-email" className="mono-label">
+            Email
+          </label>
+          <input
+            id="mc-email"
+            type="email"
+            autoComplete="email"
+            autoCapitalize="none"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="mc-password" className="mono-label">
+            Password
+          </label>
+          <input
+            id="mc-password"
+            type="password"
+            autoComplete={signUp ? "new-password" : "current-password"}
+            minLength={6}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          {signUp && <p className="field-hint">At least 6 characters.</p>}
+        </div>
+        {error && <p className="field-hint field-hint--warn">{error}</p>}
+        {notice && <p className="field-hint field-hint--ok">{notice}</p>}
+      </div>
+      <div className="setup-foot">
+        <button type="submit" className="btn btn--ink btn--block" disabled={busy}>
+          {busy ? "One moment…" : signUp ? "Continue" : "Sign in"} {!busy && <IconArrow />}
+        </button>
+        <div className="setup-links">
+          <button type="button" className="mono-label link" onClick={onSwitch}>
+            {signUp ? "I have an account" : "Create an account"}
+          </button>
+          {!signUp && (
+            <button type="button" className="mono-label link" onClick={resetPassword}>
+              Forgot password
+            </button>
+          )}
+        </div>
+      </div>
+    </form>
+  );
+};
+
+const suggestHandle = (name) =>
+  name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9_]+/g, "")
+    .slice(0, 20);
+
+const NameStep = ({ userId, onCreated }) => {
+  const [name, setName] = useState("");
+  const [handle, setHandle] = useState("");
+  const [handleEdited, setHandleEdited] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const shownHandle = handleEdited ? handle : suggestHandle(name);
+  const handleValid = HANDLE_PATTERN.test(shownHandle);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!name.trim() || !handleValid) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (await isHandleTaken(shownHandle)) {
+        setError(`@${shownHandle} is taken. Try another.`);
+        return;
+      }
+      onCreated(await createProfile({ id: userId, handle: shownHandle, displayName: name.trim() }));
+    } catch (err) {
+      setError(err.code === "23505" ? `@${shownHandle} is taken. Try another.` : describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form className="setup" onSubmit={submit}>
+      <TopBar step={2} total={SETUP_STEPS} />
+      <div className="step-body stagger">
+        <p className="mono-label">You</p>
+        <h1 className="display">What should letters call you?</h1>
         <div className="field">
           <label htmlFor="mc-name" className="mono-label">
-            Your name
+            Name
           </label>
           <input
             id="mc-name"
             type="text"
             autoComplete="given-name"
-            placeholder="How should letters find you"
-            value={userData.name}
-            onChange={(e) => onUpdate("name", e.target.value)}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={40}
+            required
           />
         </div>
-
         <div className="field">
-          <label htmlFor="mc-location" className="mono-label">
-            Where you watch the moon
+          <label htmlFor="mc-handle" className="mono-label">
+            Handle — how friends find you
           </label>
-          <input
-            id="mc-location"
-            type="text"
-            autoComplete="off"
-            placeholder="City"
-            value={locationQuery}
-            onChange={(e) => onLocationChange(e.target.value)}
-            onFocus={() => onLocationChange(locationQuery)}
-          />
-          {locationSuggestions.length > 0 && (
-            <div className="suggest">
-              {locationSuggestions.map((option) => (
-                <button
-                  type="button"
-                  key={`${option.label}-${option.timezone}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    onSelectLocation(option);
-                  }}
-                >
-                  <span>{option.label}</span>
-                  <small>{option.timezone}</small>
-                </button>
-              ))}
-            </div>
-          )}
-          {locationLoading && <p className="field-hint">Searching cities…</p>}
+          <div className="handle-input">
+            <span>@</span>
+            <input
+              id="mc-handle"
+              type="text"
+              autoCapitalize="none"
+              autoComplete="username"
+              value={shownHandle}
+              onChange={(e) => {
+                setHandleEdited(true);
+                setHandle(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 20));
+              }}
+            />
+          </div>
+          <p className="field-hint">3–20 letters, numbers or underscores.</p>
         </div>
-
-        <button type="submit" className="btn btn--ink btn--block" disabled={!canBegin}>
-          Enter <IconArrow />
+        {error && <p className="field-hint field-hint--warn">{error}</p>}
+      </div>
+      <div className="setup-foot">
+        <button type="submit" className="btn btn--ink btn--block" disabled={busy || !name.trim() || !handleValid}>
+          {busy ? "Checking…" : "Continue"} {!busy && <IconArrow />}
         </button>
-      </form>
+      </div>
+    </form>
+  );
+};
 
-      <p className="mono-label onboard-foot">
-        Tonight · {currentPhase.name} · {Math.round(moon.illumination * 100)}% lit
-      </p>
+const LocationStep = ({ userId, onSaved }) => {
+  const [city, setCity] = useState(null);
+  const [share, setShare] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!city) return;
+    setBusy(true);
+    setError("");
+    try {
+      onSaved(await saveLocation(userId, city, share));
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form className="setup" onSubmit={submit}>
+      <TopBar step={3} total={SETUP_STEPS} />
+      <div className="step-body stagger">
+        <p className="mono-label">Your sky</p>
+        <h1 className="display">Where do you watch the moon?</h1>
+        <CityField id="mc-city" label="City" value={city} onChange={setCity} />
+        <Toggle checked={share} onChange={setShare} label="Let friends see my city" />
+        <p className="field-hint">Only your city is saved — never your exact location.</p>
+        {error && <p className="field-hint field-hint--warn">{error}</p>}
+      </div>
+      <div className="setup-foot">
+        <button type="submit" className="btn btn--ink btn--block" disabled={busy || !city}>
+          {busy ? "Saving…" : "Continue"} {!busy && <IconArrow />}
+        </button>
+      </div>
+    </form>
+  );
+};
+
+const FriendsStep = ({ me, friendships, onChanged, onContinue }) => {
+  const pending = friendships.filter((f) => f.status === "pending" && !f.incoming);
+  return (
+    <div className="setup">
+      <TopBar step={4} total={SETUP_STEPS} />
+      <div className="step-body step-body--top stagger">
+        <p className="mono-label">Friends</p>
+        <h1 className="display">Who do you write to?</h1>
+        <FriendFinder me={me} friendships={friendships} onChanged={onChanged} />
+        {pending.length > 0 && (
+          <p className="field-hint field-hint--ok">
+            Requested {pending.map((f) => `@${f.profile.handle}`).join(", ")} — they'll show up once they accept.
+          </p>
+        )}
+        <InviteButton handle={me.handle} />
+      </div>
+      <div className="setup-foot">
+        <button className="btn btn--ink btn--block" onClick={onContinue}>
+          {pending.length ? "Continue" : "Skip for now"} <IconArrow />
+        </button>
+      </div>
     </div>
   );
 };
 
+const DoneStep = ({ name, moon, currentPhase, onEnter }) => (
+  <div className="setup setup--done">
+    <div className="onboard-hero stagger">
+      <StitchMoon fraction={moon.fraction} size={200} cell={5} />
+      <h1 className="display">
+        You're all set, <em>{name}.</em>
+      </h1>
+      <p className="mono-label">
+        Tonight · {currentPhase.name} · {Math.round(moon.illumination * 100)}% lit
+      </p>
+    </div>
+    <div className="setup-foot">
+      <button className="btn btn--ink btn--block" onClick={onEnter}>
+        Enter <IconArrow />
+      </button>
+    </div>
+  </div>
+);
+
+const SetPasswordScreen = ({ onDone }) => {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    const { error: err } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (err) setError(describeError(err));
+    else onDone();
+  };
+  return (
+    <form className="app-shell setup" onSubmit={submit}>
+      <div className="step-body stagger">
+        <p className="mono-label">Account</p>
+        <h1 className="display">Choose a new password.</h1>
+        <div className="field">
+          <label htmlFor="mc-new-password" className="mono-label">
+            New password
+          </label>
+          <input
+            id="mc-new-password"
+            type="password"
+            autoComplete="new-password"
+            minLength={6}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+        </div>
+        {error && <p className="field-hint field-hint--warn">{error}</p>}
+      </div>
+      <button type="submit" className="btn btn--ink btn--block" disabled={busy}>
+        Save password
+      </button>
+    </form>
+  );
+};
+
+/** ---------------------------
+ *  Friends and profile tabs
+ *  --------------------------*/
+
+const FriendsScreen = ({ me, friendships, onChanged, onWrite }) => {
+  const [busyId, setBusyId] = useState(null);
+  const incoming = friendships.filter((f) => f.status === "pending" && f.incoming);
+  const outgoing = friendships.filter((f) => f.status === "pending" && !f.incoming);
+  const friends = friendships
+    .filter((f) => f.status === "accepted")
+    .sort((a, b) => a.profile.name.localeCompare(b.profile.name));
+
+  const act = async (id, fn) => {
+    setBusyId(id);
+    try {
+      await fn(id);
+      await onChanged();
+    } catch (e) {
+      showSupabaseError(e);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="app-shell app-shell--nav">
+      <header className="archive-head">
+        <p className="mono-label">Friends · {pad2(friends.length)}</p>
+        <h1 className="display display--fit">
+          Who you <em>write to.</em>
+        </h1>
+      </header>
+
+      <FriendFinder me={me} friendships={friendships} onChanged={onChanged} />
+
+      {incoming.length > 0 && (
+        <section className="list-section">
+          <header className="list-head">
+            <h2 className="mono-label">Asking to be friends</h2>
+            <span className="mono-label">{pad2(incoming.length)}</span>
+          </header>
+          {incoming.map((f) => (
+            <div key={f.id} className="person person--row">
+              <span className="person-main">
+                <span className="person-name">{f.profile.name}</span>
+                <span className="mono-label">@{f.profile.handle}</span>
+              </span>
+              <span className="person-actions">
+                <button className="chip chip--ghost" disabled={busyId === f.id} onClick={() => act(f.id, removeFriendship)}>
+                  Decline
+                </button>
+                <button className="chip" disabled={busyId === f.id} onClick={() => act(f.id, acceptFriendRequest)}>
+                  Accept
+                </button>
+              </span>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <section className="list-section">
+        <header className="list-head">
+          <h2 className="mono-label">Friends</h2>
+          <span className="mono-label">{pad2(friends.length)}</span>
+        </header>
+        {friends.length === 0 ? (
+          <p className="empty">No friends yet. Search above, or send your invite link.</p>
+        ) : (
+          friends.map((f) => (
+            <div key={f.id} className="person person--row">
+              <span className="person-main">
+                <span className="person-name">{f.profile.name}</span>
+                <span className="mono-label">
+                  {f.location
+                    ? `${cityName(f.location.city)} · ${formatLocalTime(f.location.timezone)}`
+                    : `@${f.profile.handle}`}
+                </span>
+              </span>
+              <button className="icon-btn" onClick={() => onWrite(f.profile)} aria-label={`Write to ${f.profile.name}`}>
+                <IconPen />
+              </button>
+            </div>
+          ))
+        )}
+      </section>
+
+      {outgoing.length > 0 && (
+        <section className="list-section">
+          <header className="list-head">
+            <h2 className="mono-label">Waiting on them</h2>
+            <span className="mono-label">{pad2(outgoing.length)}</span>
+          </header>
+          {outgoing.map((f) => (
+            <div key={f.id} className="person person--row">
+              <span className="person-main">
+                <span className="person-name">{f.profile.name}</span>
+                <span className="mono-label">@{f.profile.handle}</span>
+              </span>
+              <button className="chip chip--ghost" disabled={busyId === f.id} onClick={() => act(f.id, removeFriendship)}>
+                Cancel
+              </button>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <div className="list-section">
+        <InviteButton handle={me.handle} />
+      </div>
+    </div>
+  );
+};
+
+const ProfileScreen = ({ profile, location, onLocationSaved, onLogout }) => {
+  const [city, setCity] = useState(
+    location ? { label: location.city, timezone: location.timezone, lat: location.lat, lon: location.lon } : null
+  );
+  const [share, setShare] = useState(location?.share_with_friends ?? true);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const changed = city && (city.label !== location?.city || share !== location?.share_with_friends);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      onLocationSaved(await saveLocation(profile.id, city, share));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      showSupabaseError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="app-shell app-shell--nav">
+      <header className="archive-head">
+        <p className="mono-label">@{profile.handle}</p>
+        <h1 className="display display--fit">{profile.display_name}</h1>
+      </header>
+
+      <section className="profile-section stagger">
+        <CityField id="mc-profile-city" label="Where you watch the moon" value={city} onChange={setCity} />
+        <Toggle checked={share} onChange={setShare} label="Let friends see my city" />
+        <button className="btn btn--ink btn--block" onClick={save} disabled={!changed || busy}>
+          {saved ? "Saved" : busy ? "Saving…" : "Save"}
+        </button>
+      </section>
+
+      <section className="list-section">
+        <InviteButton handle={profile.handle} />
+        <button className="btn btn--line btn--block profile-logout" onClick={onLogout}>
+          Log out
+        </button>
+      </section>
+    </div>
+  );
+};
+
+const TravelCard = ({ suggestion, onAccept, onDismiss }) => (
+  <aside className="travel-card" aria-live="polite">
+    <p className="mono-label">You've traveled</p>
+    {suggestion.city ? (
+      <p className="travel-text">
+        Looks like you're in <em>{cityName(suggestion.city.label)}</em>. Update your city?
+      </p>
+    ) : (
+      <p className="travel-text">
+        Your clock moved to <em>{suggestion.timezone.split("/").pop().replace(/_/g, " ")}</em> time. Somewhere new?
+      </p>
+    )}
+    <div className="travel-actions">
+      <button className="chip chip--ghost" onClick={onDismiss}>
+        Not now
+      </button>
+      <button className="chip" onClick={onAccept}>
+        {suggestion.city ? "Update" : "Use my location"}
+      </button>
+    </div>
+  </aside>
+);
+
 const InboxScreen = ({
-  userData,
+  me,
   messages,
   currentPhase,
   moon,
   moonPhaseLoading,
   onOpen,
-  onLogout,
+  travel,
 }) => {
   const incoming = messages.filter((msg) => msg.from !== "You");
   const pending = incoming.filter((msg) => (msg.locked || !msg.receivePhoto) && !msg.archived);
   const sent = messages.filter((msg) => msg.from === "You");
-  const greeting = getTimeBasedGreeting(userData.locationData?.timezone);
+  const greeting = getTimeBasedGreeting(me.timezone);
 
   return (
     <div className="app-shell app-shell--nav">
       <header className="home-head">
         <div className="home-meta">
           <span className="mono-label">{formatDayStamp(new Date())}</span>
-          <button onClick={onLogout} className="mono-label link">
-            Log out
-          </button>
+          <span className="mono-label">@{me.handle}</span>
         </div>
         <h1 className="display display--fit">
           {greeting}
-          {userData.name ? (
+          {me.name ? (
             <>
-              , <em>{userData.name}</em>
+              , <em>{me.name}</em>
             </>
           ) : null}
         </h1>
       </header>
+
+      {travel && <TravelCard {...travel} />}
 
       <section className="moon-panel" aria-label="Tonight's moon">
         <StitchMoon fraction={moon.fraction} size={232} />
@@ -1356,52 +2211,69 @@ const InboxScreen = ({
 };
 
 /** ---------------------------
- *  Select Recipient (locked for exhibition users)
+ *  Select Recipient: letters go to friends
  *  --------------------------*/
 
-const SelectRecipientScreen = ({ onSelect, onBack, defaultValue = "", viewerName = "" }) => {
-  const locked = getLockedCounterparty(viewerName);
-  const [name, setName] = useState(locked || defaultValue);
-
-  useEffect(() => {
-    if (locked) setName(locked);
-  }, [locked]);
+const SelectRecipientScreen = ({ friends, onSelect, onBack, onFindFriends }) => {
+  const [filter, setFilter] = useState("");
+  const q = filter.trim().toLowerCase().replace(/^@/, "");
+  const shown = friends.filter(
+    (f) => !q || f.profile.name.toLowerCase().includes(q) || f.profile.handle.includes(q)
+  );
 
   return (
-    <form
-      className="app-shell"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (name.trim()) onSelect({ name: name.trim() });
-      }}
-    >
+    <div className="app-shell">
       <TopBar onBack={onBack} step={2} />
 
-      <div className="step-body stagger">
+      <div className="step-body step-body--top stagger">
         <p className="mono-label">Recipient</p>
         <h1 className="display">Who is this letter for?</h1>
-        <input
-          type="text"
-          className="input-xl"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Their name"
-          disabled={!!locked}
-          autoComplete="off"
-          aria-label="Recipient name"
-        />
-        <p className="field-hint">They'll open it only after capturing their own moon.</p>
-      </div>
 
-      <button type="submit" className="btn btn--ink btn--block" disabled={!name.trim()}>
-        Continue <IconArrow />
-      </button>
-    </form>
+        {friends.length === 0 ? (
+          <>
+            <p className="empty">Letters go to friends. Add someone first.</p>
+            <button className="btn btn--ink btn--block" onClick={onFindFriends}>
+              Find friends <IconArrow />
+            </button>
+          </>
+        ) : (
+          <>
+            {friends.length > 5 && (
+              <input
+                className="finder-input"
+                type="search"
+                placeholder="Search friends"
+                autoComplete="off"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                aria-label="Search friends"
+              />
+            )}
+            <div className="picker">
+              {shown.map((f) => (
+                <button key={f.id} className="person person--row person--pick" onClick={() => onSelect(f.profile)}>
+                  <span className="person-main">
+                    <span className="person-name">{f.profile.name}</span>
+                    <span className="mono-label">
+                      {f.location
+                        ? `${cityName(f.location.city)} · ${formatLocalTime(f.location.timezone)}`
+                        : `@${f.profile.handle}`}
+                    </span>
+                  </span>
+                  <IconArrow />
+                </button>
+              ))}
+            </div>
+            <p className="field-hint">They'll open it only after capturing their own moon.</p>
+          </>
+        )}
+      </div>
+    </div>
   );
 };
 
 /** ---------------------------
- *  Compose Letter (locked message for exhibition users)
+ *  Compose Letter
  *  --------------------------*/
 
 const ComposeLetterScreen = ({
@@ -1412,9 +2284,7 @@ const ComposeLetterScreen = ({
   onSealed,
   onBack,
   currentPhase,
-  viewerName = "",
 }) => {
-  const locked = isExhibitionUser(viewerName);
   const [sending, setSending] = useState(false);
   const stageRef = useRef(null);
   const letterRef = useRef(null);
@@ -1473,7 +2343,7 @@ const ComposeLetterScreen = ({
             onChange={(e) => onChange(e.target.value)}
             className="letter-input"
             placeholder="Dear…"
-            readOnly={locked || sending}
+            readOnly={sending}
             aria-label="Your letter"
           />
 
@@ -1642,29 +2512,10 @@ const MessageSentScreen = ({ from, recipient, currentPhase, moon, onDone }) => {
 
 /** ---------------------------
  *  Opened-letter stories: shown to the sender on login, once per opened letter
+ *  (seen state lives on the letter, so it's once across devices)
  *  --------------------------*/
 
 const HOLD_TO_PAUSE_MS = 220;
-
-const seenOpenedKey = (name) => `mooncode_seen_opened:${name}`;
-
-function readSeenOpened(name) {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(seenOpenedKey(name)) || "[]"));
-  } catch {
-    return new Set();
-  }
-}
-
-function markOpenedSeen(name, id) {
-  try {
-    const seen = readSeenOpened(name);
-    seen.add(id);
-    localStorage.setItem(seenOpenedKey(name), JSON.stringify([...seen]));
-  } catch {
-    // storage unavailable — the story may show again next time
-  }
-}
 
 const cityOf = (location) => (location ? location.split(",")[0] : "");
 
@@ -1958,42 +2809,122 @@ function isCityResult(item) {
   return ["PPL", "PPLA3", "PPLA4"].includes(code) && (item.population || 0) >= CITY_MIN_POPULATION;
 }
 
+function cityLabel(item) {
+  const region = item.admin1 && item.admin1 !== item.name ? `, ${item.admin1}` : "";
+  return `${item.name}${region}${item.country ? `, ${item.country}` : ""}`;
+}
+
+async function searchCities(query, { signal, countryCode } = {}) {
+  const country = countryCode ? `&countryCode=${countryCode}` : "";
+  const response = await fetch(
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=30&language=en&format=json${country}`,
+    { signal }
+  );
+  const data = await response.json();
+  const seen = new Set();
+  const cities = [];
+  for (const item of (data?.results || []).filter(isCityResult)) {
+    const label = cityLabel(item);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    cities.push({ label, timezone: item.timezone, lat: item.latitude, lon: item.longitude });
+  }
+  return cities;
+}
+
+// Finds the city the device is in. Only the city's centre is kept, never the raw position.
+async function detectCurrentCity() {
+  if (!navigator.geolocation) throw new Error("Location isn't available on this device.");
+  const position = await new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(resolve, reject, { maximumAge: 10 * 60 * 1000, timeout: 15000 })
+  ).catch((e) => {
+    throw new Error(e?.code === 1 ? "Location permission was declined." : "Couldn't find your location.");
+  });
+  const { latitude, longitude } = position.coords;
+  const place = await fetch(
+    `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=en`
+  ).then((r) => r.json());
+  const name = place.city || place.locality;
+  if (name) {
+    const [match] = await searchCities(name, { countryCode: place.countryCode });
+    if (match) return match;
+  }
+  return {
+    label: [name, place.countryName].filter(Boolean).join(", ") || "Your location",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    lat: Math.round(latitude * 10) / 10,
+    lon: Math.round(longitude * 10) / 10,
+  };
+}
+
+async function hasLocationPermission() {
+  try {
+    const status = await navigator.permissions?.query({ name: "geolocation" });
+    return status?.state === "granted";
+  } catch {
+    return false;
+  }
+}
+
+// Debounced city search for a text field; skips searching once `selected` matches the text
+function useCitySearch(query, selected) {
+  const [suggestions, setSuggestions] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const q = query.trim();
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      if (q.length < 2 || q === selected) {
+        setSuggestions([]);
+        return;
+      }
+      setLoading(true);
+      try {
+        const cities = await searchCities(q, { signal: controller.signal });
+        setSuggestions(cities.slice(0, 6));
+      } catch (e) {
+        if (e.name !== "AbortError") setSuggestions([]);
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [query, selected]);
+
+  return { suggestions, loading };
+}
+
 /** ---------------------------
  *  Main App
  *  --------------------------*/
 
-// Sign-in lasts for the browser session only: a refresh keeps you in, reopening the app starts at onboarding
-try {
-  localStorage.removeItem("mooncode_user");
-  localStorage.removeItem("mooncode_route");
-} catch {
-  // storage unavailable (private mode)
-}
+const MAIN_ROUTES = ["inbox", "friends", "gallery", "profile"];
+const TRAVEL_MIN_MILES = 50;
+const TRAVEL_DISMISSED_KEY = "mooncode_travel_dismissed";
 
 const MoonCodeApp = () => {
-  const [userData, setUserData] = useState(() => {
-    try {
-      const stored = JSON.parse(sessionStorage.getItem("mooncode_user") || "{}");
-      return {
-        name: stored.name || "",
-        location: stored.location || "",
-        locationData: stored.locationData || null,
-      };
-    } catch {
-      return { name: "", location: "", locationData: null };
-    }
-  });
+  // undefined while Supabase restores the saved session, null when signed out
+  const [session, setSession] = useState(undefined);
+  const [recovering, setRecovering] = useState(false);
+  // profile + city for the signed-in user, tagged with whose they are
+  const [account, setAccount] = useState(null);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [friendData, setFriendData] = useState({ uid: null, rows: [] });
+  const [invite, setInvite] = useState(() => takeInviteFromUrl());
 
   const [route, setRoute] = useState(() => {
     try {
-      const storedUser = JSON.parse(sessionStorage.getItem("mooncode_user") || "{}");
-      const storedRoute = sessionStorage.getItem("mooncode_route");
-      if (storedUser?.name) {
-        if (storedRoute && storedRoute !== "onboarding") return storedRoute;
-        return "inbox";
-      }
-    } catch {}
-    return "onboarding";
+      const stored = sessionStorage.getItem("mooncode_route");
+      if (MAIN_ROUTES.includes(stored)) return stored;
+    } catch {
+      // storage unavailable
+    }
+    return "inbox";
   });
 
   const [messages, setMessages] = useState([]);
@@ -2001,16 +2932,12 @@ const MoonCodeApp = () => {
 
   const [sendPhoto, setSendPhoto] = useState(null);
   const [recipient, setRecipient] = useState(null);
-  const [recipientDraft, setRecipientDraft] = useState("");
   // where the sealed envelope sat on the letter screen, so the next screen can pick it up from there
   const [sealedFrom, setSealedFrom] = useState(null);
   // sent letters opened since the sender last looked — shown once as stories after login
   const [openedStories, setOpenedStories] = useState(null);
   const [messageText, setMessageText] = useState("");
-
-  const [locationQuery, setLocationQuery] = useState(userData.location || "");
-  const [locationSuggestions, setLocationSuggestions] = useState([]);
-  const [locationLoading, setLocationLoading] = useState(false);
+  const [travel, setTravel] = useState(null);
 
   const [currentPhase, setCurrentPhase] = useState(MOON_PHASES[0]);
   const [moonPhaseLoading, setMoonPhaseLoading] = useState(true);
@@ -2079,192 +3006,259 @@ const MoonCodeApp = () => {
     };
   }, []);
 
-  const viewerName = userData.name?.trim() || "";
-  const lockedCounterparty = getLockedCounterparty(viewerName);
-
-  // Force message text when entering compose for exhibition users
+  // Session: restore on load, follow sign-in / sign-out / password-reset links
   useEffect(() => {
-    if (route !== "compose") return;
-    if (isExhibitionUser(viewerName)) setMessageText(EXHIBITION_MESSAGE);
-  }, [route, viewerName]);
+    supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, next) => {
+      setSession(next ?? null);
+      if (event === "PASSWORD_RECOVERY") setRecovering(true);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
 
-  const sortedMessages = useMemo(
-    () => [...messages].sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)),
-    [messages]
+  const uid = session?.user?.id ?? null;
+
+  const loadAccount = async (userId) => {
+    try {
+      const [profile, location] = await Promise.all([fetchProfile(userId), fetchLocation(userId)]);
+      setAccount({ uid: userId, profile, location });
+    } catch (e) {
+      console.error("loadAccount", e);
+      setAccount({ uid: userId, profile: null, location: null, error: describeError(e) });
+    }
+  };
+
+  useEffect(() => {
+    if (uid) loadAccount(uid);
+  }, [uid]);
+
+  const accountReady = !!uid && account?.uid === uid;
+  const profile = accountReady ? account.profile : null;
+  const myLocation = accountReady ? account.location : null;
+  const myId = profile?.id ?? null;
+
+  const me = useMemo(
+    () =>
+      profile
+        ? {
+            id: profile.id,
+            handle: profile.handle,
+            name: profile.display_name,
+            timezone: myLocation?.timezone,
+            city: myLocation?.city || "",
+            coords: myLocation ? { lat: myLocation.lat, lon: myLocation.lon } : null,
+          }
+        : null,
+    [profile, myLocation]
   );
 
-  const updateUserData = (field, value) => setUserData((p) => ({ ...p, [field]: value }));
+  const friendships = friendData.uid === myId ? friendData.rows : [];
+  const friends = friendships.filter((f) => f.status === "accepted");
+  const incomingRequests = friendships.filter((f) => f.status === "pending" && f.incoming).length;
 
-  const handleLocationInput = (value) => {
-    setLocationQuery(value);
-    if (value !== userData.location) {
-      setUserData((prev) => ({ ...prev, location: "", locationData: null }));
+  const refreshFriends = async () => {
+    if (!myId) return;
+    try {
+      setFriendData({ uid: myId, rows: await fetchFriendships(myId) });
+    } catch (e) {
+      console.error("fetchFriendships", e);
     }
   };
-
-  const handleSelectLocation = (option) => {
-    setUserData((prev) => ({
-      ...prev,
-      location: option.label,
-      locationData: {
-        label: option.label,
-        timezone: option.timezone,
-        lat: option.lat,
-        lon: option.lon,
-      },
-    }));
-    setLocationQuery(option.label);
-    setLocationSuggestions([]);
-  };
-
+  const refreshFriendsRef = useRef(refreshFriends);
   useEffect(() => {
-    sessionStorage.setItem("mooncode_user", JSON.stringify(userData));
-  }, [userData]);
+    refreshFriendsRef.current = refreshFriends;
+  });
 
+  // Friends: load, and refresh live when someone asks, accepts or unfriends
   useEffect(() => {
-    if (route) sessionStorage.setItem("mooncode_route", route);
-    // each screen starts at the top so the nav and browser chrome don't jump between tabs
-    window.scrollTo(0, 0);
-  }, [route]);
+    if (!myId) return;
+    refreshFriendsRef.current();
+    const refresh = () => refreshFriendsRef.current();
+    const channel = supabase
+      .channel(`friendships-${myId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "friendships", filter: `requester_id=eq.${myId}` }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "friendships", filter: `addressee_id=eq.${myId}` }, refresh)
+      .subscribe();
+    return () => supabase.removeChannel(channel);
+  }, [myId]);
 
+  // Invite link: once signed up, send the inviter a friend request
   useEffect(() => {
-    setLocationQuery(userData.location || "");
-  }, [userData.location]);
-
-  useEffect(() => {
-    const query = locationQuery.trim();
-    // nothing to search once the text is the city that was just picked
-    if (query.length < 2 || query === userData.location) {
-      setLocationSuggestions([]);
-      setLocationLoading(false);
-      return;
-    }
-
-    const controller = new AbortController();
-    setLocationLoading(true);
-
-    const timer = setTimeout(async () => {
+    if (!myId || !invite) return;
+    let alive = true;
+    (async () => {
       try {
-        const response = await fetch(
-          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
-            query
-          )}&count=30&language=en&format=json`,
-          { signal: controller.signal }
-        );
-        const data = await response.json();
-        const results = (data?.results || []).filter(isCityResult);
-        const seen = new Set();
-        const mapped = [];
-        for (const item of results) {
-          const region = item.admin1 && item.admin1 !== item.name ? `, ${item.admin1}` : "";
-          const label = `${item.name}${region}${item.country ? `, ${item.country}` : ""}`;
-          if (seen.has(label)) continue;
-          seen.add(label);
-          mapped.push({ label, timezone: item.timezone, lat: item.latitude, lon: item.longitude });
+        const inviter = await fetchProfileByHandle(invite);
+        if (inviter && inviter.id !== myId) await sendFriendRequest(myId, inviter.id);
+        clearInvite();
+        if (alive) {
+          setInvite(null);
+          refreshFriendsRef.current();
         }
-        setLocationSuggestions(mapped.slice(0, 6));
       } catch (e) {
-        if (e.name !== "AbortError") setLocationSuggestions([]);
-      } finally {
-        setLocationLoading(false);
+        console.error("invite", e);
       }
-    }, 300);
-
+    })();
     return () => {
-      controller.abort();
-      clearTimeout(timer);
+      alive = false;
     };
-  }, [locationQuery, userData.location]);
+  }, [myId, invite]);
 
-  // Load + realtime subscribe
+  // Letters: load + realtime subscribe
   useEffect(() => {
-    const viewer = userData.name?.trim();
-    if (!viewer) return;
-
+    if (!myId) return;
     let isMounted = true;
 
-    fetchMessagesForUser(viewer)
+    fetchMessagesForUser(myId)
       .then((rows) => {
         if (!isMounted) return;
-        const mapped = rows.map((r) => mapRowToMessage(r, viewer));
+        const mapped = rows.map((r) => mapRowToMessage(r, myId));
         setMessages(mapped);
-        const seen = readSeenOpened(viewer);
         const opened = mapped
-          .filter((m) => m.from === "You" && m.receivePhoto && !seen.has(m.id))
+          .filter((m) => m.from === "You" && m.receivePhoto && !m.senderSeenOpenedAt)
           .sort((a, b) => new Date(a.receiveAt) - new Date(b.receiveAt));
-        setOpenedStories(opened.length ? { viewer, items: opened } : null);
+        setOpenedStories(opened.length ? { uid: myId, items: opened } : null);
       })
       .catch((err) => console.error("fetchMessagesForUser", err));
 
+    const upsert = (payload) => {
+      const row = payload.new;
+      if (!row) return;
+      const mapped = mapRowToMessage(row, myId);
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === mapped.id);
+        if (idx === -1) return [mapped, ...prev];
+        const next = [...prev];
+        next[idx] = mapped;
+        return next;
+      });
+    };
+
     const channel = supabase
-      .channel(`messages-${viewer}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, (payload) => {
-        const row = payload.new;
-        if (!row) return;
-        if (row.sender !== viewer && row.recipient !== viewer) return;
-
-        const mapped = mapRowToMessage(row, viewer);
-
-        setMessages((prev) => {
-          const idx = prev.findIndex((m) => m.id === mapped.id);
-          if (idx === -1) return [mapped, ...prev];
-          const next = [...prev];
-          next[idx] = mapped;
-          return next;
-        });
-      })
+      .channel(`messages-${myId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "messages", filter: `sender_id=eq.${myId}` }, upsert)
+      .on("postgres_changes", { event: "*", schema: "public", table: "messages", filter: `recipient_id=eq.${myId}` }, upsert)
       .subscribe();
 
     return () => {
       isMounted = false;
       supabase.removeChannel(channel);
     };
-  }, [userData.name]);
+  }, [myId]);
 
-  const handleStartSend = () => {
+  // Travel: once per visit, see whether the phone is somewhere other than the saved city
+  const savedCity = myLocation?.city;
+  const savedTimezone = myLocation?.timezone;
+  const savedLat = myLocation?.lat;
+  const savedLon = myLocation?.lon;
+  useEffect(() => {
+    if (!myId || !savedCity) return;
+    let alive = true;
+    (async () => {
+      let dismissed = null;
+      try {
+        dismissed = sessionStorage.getItem(TRAVEL_DISMISSED_KEY);
+      } catch {
+        // storage unavailable
+      }
+      const deviceTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+      if (await hasLocationPermission()) {
+        try {
+          const here = await detectCurrentCity();
+          const miles = getDistanceMiles(null, null, { lat: savedLat, lon: savedLon }, here);
+          if (alive && miles !== null && miles > TRAVEL_MIN_MILES && dismissed !== here.label) {
+            setTravel({ city: here });
+          }
+          return;
+        } catch (e) {
+          console.warn("travel check", e);
+        }
+      }
+      // no location permission: a changed time zone is still a good hint
+      if (alive && savedTimezone && deviceTimezone !== savedTimezone && dismissed !== deviceTimezone) {
+        setTravel({ city: null, timezone: deviceTimezone });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [myId, savedCity, savedTimezone, savedLat, savedLon]);
+
+  useEffect(() => {
+    if (MAIN_ROUTES.includes(route)) {
+      try {
+        sessionStorage.setItem("mooncode_route", route);
+      } catch {
+        // storage unavailable
+      }
+    }
+    // each screen starts at the top so the nav and browser chrome don't jump between tabs
+    window.scrollTo(0, 0);
+  }, [route]);
+
+  const sortedMessages = useMemo(
+    () => [...messages].sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)),
+    [messages]
+  );
+
+  const updateLocation = (location) => setAccount((prev) => ({ ...prev, location }));
+
+  const acceptTravel = async () => {
+    try {
+      const city = travel.city ?? (await detectCurrentCity());
+      updateLocation(await saveLocation(myId, city, myLocation?.share_with_friends ?? true));
+      setTravel(null);
+    } catch (e) {
+      showSupabaseError(e, "Couldn't update your city.");
+    }
+  };
+
+  const dismissTravel = () => {
+    try {
+      sessionStorage.setItem(TRAVEL_DISMISSED_KEY, travel.city?.label ?? travel.timezone);
+    } catch {
+      // storage unavailable
+    }
+    setTravel(null);
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setMessages([]);
+    setOpenedStories(null);
+    setTravel(null);
     setRecipient(null);
-    setRecipientDraft("");
+    setRoute("inbox");
+  };
+
+  const handleStartSend = (to = null) => {
+    setRecipient(to);
+    setMessageText("");
     setRoute("sendCapture");
   };
 
-  const handleSelectRecipient = (contact) => {
-    // Exhibition users: force counterparty
-    const forced = lockedCounterparty ? { name: lockedCounterparty } : contact;
-    setRecipient(forced);
-    setRecipientDraft(forced?.name || "");
+  const handleSelectRecipient = (friend) => {
+    setRecipient(friend);
     setRoute("compose");
   };
 
   const handleSendMessage = async () => {
-    const sender = userData.name.trim();
-    if (!sender) {
-      alert("Enter your name first.");
-      setRoute("onboarding");
-      return false;
-    }
-
-    const forcedRecipient = getLockedCounterparty(sender);
-    const recipientName = forcedRecipient ? forcedRecipient : recipient?.name?.trim();
-    if (!recipientName) return false;
-
-    const bodyText = isExhibitionUser(sender)
-      ? EXHIBITION_MESSAGE
-      : messageText.trim() || "A message carried by moonlight.";
-
+    if (!me || !recipient) return false;
     try {
       const row = await insertMessage({
-        sender,
-        recipient: recipientName,
-        body: bodyText,
+        sender: { id: me.id, name: me.name },
+        recipient: { id: recipient.id, name: recipient.name },
+        body: messageText.trim() || "A message carried by moonlight.",
         sendPhoto,
       });
 
-      const mapped = mapRowToMessage(row, sender);
-      setMessages((prev) => [mapped, ...prev]);
+      const mapped = mapRowToMessage(row, me.id);
+      setMessages((prev) => [mapped, ...prev.filter((m) => m.id !== mapped.id)]);
       setActiveMessage(mapped);
       return true;
     } catch (e) {
-      showSupabaseError(e, "Failed to send message. Check RLS policies.");
+      showSupabaseError(e, "Failed to send the letter.");
       return false;
     }
   };
@@ -2289,43 +3283,101 @@ const MoonCodeApp = () => {
 
   const handlePrintingComplete = () => setRoute("inbox");
 
-  const showNav = ["inbox", "gallery"].includes(route);
+  const handleStorySeen = (id) => {
+    markOpenedLetterSeen(id);
+    const seenAt = new Date().toISOString();
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, senderSeenOpenedAt: seenAt } : m)));
+  };
+
+  // ---- which stage of the app to show ----
+
+  if (recovering) {
+    return (
+      <div className="mooncode-app">
+        <SetPasswordScreen onDone={() => setRecovering(false)} />
+      </div>
+    );
+  }
+
+  if (session === undefined || (session && !accountReady)) {
+    return (
+      <div className="mooncode-app">
+        <div className="app-shell app-loading" aria-label="Loading">
+          <StitchMoon fraction={moon.fraction} size={120} cell={5} />
+        </div>
+      </div>
+    );
+  }
+
+  if (account?.error && accountReady) {
+    return (
+      <div className="mooncode-app">
+        <div className="app-shell app-loading">
+          <p className="mono-label">Couldn't load your account</p>
+          <p className="field-hint">{account.error}</p>
+          <button className="btn btn--ink" onClick={() => loadAccount(uid)}>
+            Try again
+          </button>
+          <button className="mono-label link" onClick={handleLogout}>
+            Log out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!session || !profile || !myLocation || setupOpen) {
+    return (
+      <div className="mooncode-app">
+        <OnboardingFlow
+          session={session}
+          profile={profile}
+          location={myLocation}
+          friendships={friendships}
+          invite={invite}
+          onProfileCreated={(p) => {
+            setSetupOpen(true);
+            setAccount((prev) => ({ ...prev, profile: p }));
+          }}
+          onLocationSaved={(loc) => {
+            setSetupOpen(true);
+            updateLocation(loc);
+          }}
+          onFriendsChanged={refreshFriends}
+          onFinished={() => {
+            setSetupOpen(false);
+            setRoute("inbox");
+          }}
+          currentPhase={currentPhase}
+          moon={moon}
+        />
+      </div>
+    );
+  }
+
+  const showNav = MAIN_ROUTES.includes(route);
   const isNight = route === "sendCapture" || route === "unlockCapture";
 
   return (
     <div className={`mooncode-app ${isNight ? "is-night" : ""}`}>
-      {route === "onboarding" && (
-        <OnboardingScreen
-          userData={userData}
-          onUpdate={updateUserData}
-          locationQuery={locationQuery}
-          locationSuggestions={locationSuggestions}
-          locationLoading={locationLoading}
-          onLocationChange={handleLocationInput}
-          onSelectLocation={handleSelectLocation}
-          onBegin={() => setRoute("inbox")}
-          currentPhase={currentPhase}
-          moon={moon}
-        />
-      )}
-
       {route === "inbox" && (
         <InboxScreen
-          userData={userData}
+          me={me}
           messages={sortedMessages}
           currentPhase={currentPhase}
           moon={moon}
           moonPhaseLoading={moonPhaseLoading}
           onOpen={handleOpenMessage}
-          onLogout={() => {
-            sessionStorage.removeItem("mooncode_user");
-            sessionStorage.removeItem("mooncode_route");
-            setUserData({ name: "", location: "", locationData: null });
-            setLocationQuery("");
-            setLocationSuggestions([]);
-            setRoute("onboarding");
-          }}
+          travel={travel ? { suggestion: travel, onAccept: acceptTravel, onDismiss: dismissTravel } : null}
         />
+      )}
+
+      {route === "friends" && (
+        <FriendsScreen me={me} friendships={friendships} onChanged={refreshFriends} onWrite={handleStartSend} />
+      )}
+
+      {route === "profile" && (
+        <ProfileScreen profile={profile} location={myLocation} onLocationSaved={updateLocation} onLogout={handleLogout} />
       )}
 
       {route === "sendCapture" && (
@@ -2333,22 +3385,22 @@ const MoonCodeApp = () => {
           title="Capture your moon"
           subtitle="Seal your letter with tonight's light"
           step={1}
-          locationLabel={userData.location}
-          locationCoords={userData.locationData}
+          locationLabel={me.city}
+          locationCoords={me.coords}
           onBack={() => setRoute("inbox")}
           onVerifiedMoon={(capture) => {
             setSendPhoto(capture);
-            setRoute("selectRecipient");
+            setRoute(recipient ? "compose" : "selectRecipient");
           }}
         />
       )}
 
       {route === "selectRecipient" && (
         <SelectRecipientScreen
-          defaultValue={recipientDraft}
-          viewerName={viewerName}
+          friends={friends}
           onSelect={handleSelectRecipient}
           onBack={() => setRoute("sendCapture")}
+          onFindFriends={() => setRoute("friends")}
         />
       )}
 
@@ -2364,7 +3416,6 @@ const MoonCodeApp = () => {
           }}
           onBack={() => setRoute("selectRecipient")}
           currentPhase={currentPhase}
-          viewerName={viewerName}
         />
       )}
 
@@ -2382,8 +3433,8 @@ const MoonCodeApp = () => {
         <MoonCameraCapture
           title="Capture to unlock"
           subtitle="Your moon will reveal this letter"
-          locationLabel={userData.location}
-          locationCoords={userData.locationData}
+          locationLabel={me.city}
+          locationCoords={me.coords}
           onBack={() => setRoute("inbox")}
           onVerifiedMoon={(capture) => {
             (async () => {
@@ -2393,12 +3444,12 @@ const MoonCodeApp = () => {
                   receivePhoto: capture,
                 });
 
-                const mapped = mapRowToMessage(row, userData.name || "You");
+                const mapped = mapRowToMessage(row, me.id);
                 setActiveMessage(mapped);
                 setMessages((prev) => prev.map((m) => (m.id === mapped.id ? mapped : m)));
                 setRoute("printing");
               } catch (e) {
-                showSupabaseError(e, "Failed to unlock message (check Supabase + RLS).");
+                showSupabaseError(e, "Failed to unlock the letter.");
               }
             })();
           }}
@@ -2415,14 +3466,15 @@ const MoonCodeApp = () => {
         <BottomNav
           current={route}
           onSelect={setRoute}
-          onSend={handleStartSend}
+          onSend={() => handleStartSend()}
+          badges={{ friends: incomingRequests > 0 }}
         />
       )}
 
-      {route === "inbox" && openedStories?.viewer === viewerName && (
+      {route === "inbox" && openedStories?.uid === me.id && (
         <OpenedStories
           items={openedStories.items}
-          onSeen={(id) => markOpenedSeen(viewerName, id)}
+          onSeen={handleStorySeen}
           onClose={() => setOpenedStories(null)}
           onArchive={() => {
             setOpenedStories(null);
