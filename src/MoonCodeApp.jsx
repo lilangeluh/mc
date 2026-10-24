@@ -1001,90 +1001,42 @@ function loadMoonMap() {
 
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
-// Light the near side for the given cycle fraction and bucket it into stitch levels (0–4)
-function computeStitches(map, fraction, size, cell) {
+// Brightness of each pixel of the lit near side (0 = shadow, 1 = bright highland); -1 outside the disc
+function computeMoonLight(map, fraction, px) {
   const theta = 2 * Math.PI * fraction;
   const sun = [Math.sin(theta), 0, -Math.cos(theta)];
-  const r = size / 2;
-  const n = Math.floor(size / cell);
-  const offset = (size - n * cell) / 2;
-  const stitches = [];
+  const r = px / 2;
+  const light = new Float32Array(px * px).fill(-1);
 
-  const albedoAt = (x, y, z) => {
-    const lat = Math.asin(-y);
-    const lon = Math.atan2(x, z);
-    const u = Math.floor((0.5 + lon / (2 * Math.PI)) * (map.w - 1));
-    const v = Math.floor((0.5 - lat / Math.PI) * (map.h - 1));
-    return map.gray[v * map.w + u];
-  };
-
-  for (let row = 0; row < n; row++) {
-    for (let col = 0; col < n; col++) {
-      const cx = offset + (col + 0.5) * cell;
-      const cy = offset + (row + 0.5) * cell;
-      const x = (cx - r) / r;
-      const y = (cy - r) / r;
+  for (let row = 0; row < px; row++) {
+    for (let col = 0; col < px; col++) {
+      const x = (col + 0.5 - r) / r;
+      const y = (row + 0.5 - r) / r;
       const d2 = x * x + y * y;
-      if (d2 > 0.97) continue;
+      if (d2 > 1) continue;
       const z = Math.sqrt(1 - d2);
 
-      // average a few samples per cell so stitches read as tone, not noise
-      const q = (cell / r) * 0.25;
-      let albedo = 0;
-      for (const [dx, dy] of [[-q, -q], [q, -q], [-q, q], [q, q]]) {
-        const sx = x + dx;
-        const sy = y + dy;
-        const sd = Math.min(0.999, sx * sx + sy * sy);
-        albedo += albedoAt(sx, sy, Math.sqrt(1 - sd)) / 4;
-      }
-      albedo = clamp01((albedo - 0.3) / 0.45);
+      const lat = Math.asin(-y);
+      const lon = Math.atan2(x, z);
+      const u = Math.floor((0.5 + lon / (2 * Math.PI)) * (map.w - 1));
+      const v = Math.floor((0.5 - lat / Math.PI) * (map.h - 1));
+      const albedo = clamp01((map.gray[v * map.w + u] - 0.3) / 0.45);
 
-      // the moon stays nearly flat-lit until close to the terminator, so surface detail carries the image
+      // nearly flat-lit until close to the terminator, with a touch of limb darkening so the edge holds
       const mu0 = x * sun[0] + y * sun[1] + z * sun[2];
-      const light = mu0 > 0 ? Math.pow(clamp01(mu0 * 5), 0.6) : 0;
-      const b = light * (0.25 + 0.75 * albedo);
-
-      // ink marks shadow, like an engraving: dark maria get heavy stitches, bright highlands light ones,
-      // and the unlit side is left as bare dots
-      const level = b < 0.04 ? 0 : b > 0.78 ? 1 : b > 0.6 ? 2 : b > 0.42 ? 3 : 4;
-      stitches.push({ cx, cy, level, d: Math.sqrt(d2) });
+      const lit = mu0 > 0 ? Math.pow(clamp01(mu0 * 5), 0.6) : 0;
+      light[row * px + col] = lit * (0.25 + 0.75 * albedo) * (0.78 + 0.22 * z);
     }
   }
-  return stitches;
+  return light;
 }
 
-const STITCH_STYLE = [
-  null,
-  { alpha: 0.45, width: 0.8, cross: false },
-  { alpha: 0.6, width: 0.9, cross: true },
-  { alpha: 0.82, width: 1.15, cross: true },
-  { alpha: 1, width: 1.45, cross: true },
-];
+const THRESHOLD = 0.56;
+const GRAIN = 0.16;
 
-function drawStitch(ctx, s, cell, p) {
-  if (s.level === 0) {
-    ctx.globalAlpha = 0.3 * p;
-    ctx.beginPath();
-    ctx.arc(s.cx, s.cy, cell * 0.08, 0, Math.PI * 2);
-    ctx.fill();
-    return;
-  }
-  const style = STITCH_STYLE[s.level];
-  const h = cell * 0.32 * p;
-  ctx.globalAlpha = style.alpha;
-  ctx.lineWidth = style.width;
-  ctx.beginPath();
-  ctx.moveTo(s.cx - h, s.cy + h);
-  ctx.lineTo(s.cx + h, s.cy - h);
-  if (style.cross) {
-    ctx.moveTo(s.cx - h, s.cy - h);
-    ctx.lineTo(s.cx + h, s.cy + h);
-  }
-  ctx.stroke();
-}
-
-// Real lunar surface, lit for tonight's phase, rendered as cross-stitches
-const StitchMoon = ({ fraction = 0.5, size = 232, cell = 5.5, className = "" }) => {
+// Real lunar surface, lit for tonight's phase, run through a threshold: every pixel is ink or paper.
+// On load the threshold sweeps up, so the darkest areas ink in first.
+const ThresholdMoon = ({ fraction = 0.5, size = 232, className = "" }) => {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -1095,30 +1047,38 @@ const StitchMoon = ({ fraction = 0.5, size = 232, cell = 5.5, className = "" }) 
       .then((map) => {
         const canvas = canvasRef.current;
         if (!alive || !canvas) return;
-        const dpr = window.devicePixelRatio || 1;
-        canvas.width = Math.round(size * dpr);
-        canvas.height = Math.round(size * dpr);
+        const px = Math.round(size * Math.min(2, window.devicePixelRatio || 1));
+        canvas.width = px;
+        canvas.height = px;
         const ctx = canvas.getContext("2d");
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const ink = getComputedStyle(canvas).color;
-        ctx.strokeStyle = ink;
-        ctx.fillStyle = ink;
-        ctx.lineCap = "round";
+        const [ir, ig, ib] = (getComputedStyle(canvas).color.match(/\d+/g) || [20, 20, 20]).map(Number);
 
-        const stitches = computeStitches(map, fraction, size, cell);
+        const light = computeMoonLight(map, fraction, px);
+        const grain = new Float32Array(light.length);
+        for (let i = 0; i < grain.length; i++) grain[i] = (Math.random() - 0.5) * 2 * GRAIN;
+
+        const image = ctx.createImageData(px, px);
+        const data = image.data;
         const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         const start = performance.now();
-        const duration = 1100;
+        const duration = 1200;
 
         const frame = (now) => {
-          const t = reduceMotion ? 2 : (now - start) / duration;
-          ctx.clearRect(0, 0, size, size);
-          for (const s of stitches) {
-            // stitches appear from the centre outwards
-            const p = clamp01((t * 1.25 - s.d) * 5);
-            if (p > 0) drawStitch(ctx, s, cell, p);
+          const t = reduceMotion ? 1 : Math.min(1, (now - start) / duration);
+          const level = THRESHOLD * (1 - Math.pow(1 - t, 3));
+          for (let i = 0; i < light.length; i++) {
+            const k = i * 4;
+            if (light[i] >= 0 && light[i] + grain[i] < level) {
+              data[k] = ir;
+              data[k + 1] = ig;
+              data[k + 2] = ib;
+              data[k + 3] = 255;
+            } else {
+              data[k + 3] = 0;
+            }
           }
-          if (t < 1.25 + 0.2) raf = requestAnimationFrame(frame);
+          ctx.putImageData(image, 0, 0);
+          if (t < 1) raf = requestAnimationFrame(frame);
         };
         raf = requestAnimationFrame(frame);
       })
@@ -1128,12 +1088,12 @@ const StitchMoon = ({ fraction = 0.5, size = 232, cell = 5.5, className = "" }) 
       alive = false;
       cancelAnimationFrame(raf);
     };
-  }, [fraction, size, cell]);
+  }, [fraction, size]);
 
   return (
     <canvas
       ref={canvasRef}
-      className={`stitch-moon ${className}`}
+      className={`threshold-moon ${className}`}
       style={{ "--moon-size": `${size}px` }}
       aria-hidden="true"
     />
@@ -1565,17 +1525,15 @@ const OnboardingFlow = ({
 const WelcomeStep = ({ moon, invite, onSignUp, onSignIn }) => (
   <>
     <div className="onboard-hero stagger">
-      <StitchMoon fraction={moon.fraction} size={200} cell={5} />
+      <ThresholdMoon fraction={moon.fraction} size={200} />
       <h1 className="display">
         Letters sealed
         <br />
         by <em>moonlight.</em>
       </h1>
-      <p className="field-hint onboard-lede">
-        {invite
-          ? `@${invite} invited you. Write each other letters that open under the moon.`
-          : "Write to the people you miss. They open it under their own moon."}
-      </p>
+      {invite && (
+        <p className="field-hint onboard-lede">@{invite} invited you. Write each other letters that open under the moon.</p>
+      )}
     </div>
 
     <div className="onboard-actions stagger">
@@ -1639,7 +1597,7 @@ const AccountStep = ({ mode, onBack, onSwitch }) => {
       <TopBar onBack={onBack} step={signUp ? 1 : null} total={SETUP_STEPS} />
       <div className="step-body stagger">
         <p className="mono-label">{signUp ? "Account" : "Welcome back"}</p>
-        <h1 className="display">{signUp ? "Make your account." : "Sign in."}</h1>
+        <h1 className="display">{signUp ? "Make your account" : "Sign in"}</h1>
         <div className="field">
           <label htmlFor="mc-email" className="mono-label">
             Email
@@ -1655,9 +1613,16 @@ const AccountStep = ({ mode, onBack, onSwitch }) => {
           />
         </div>
         <div className="field">
-          <label htmlFor="mc-password" className="mono-label">
-            Password
-          </label>
+          <div className="field-label-row">
+            <label htmlFor="mc-password" className="mono-label">
+              Password
+            </label>
+            {!signUp && (
+              <button type="button" className="mono-label link" onClick={resetPassword}>
+                Forgot?
+              </button>
+            )}
+          </div>
           <input
             id="mc-password"
             type="password"
@@ -1669,7 +1634,11 @@ const AccountStep = ({ mode, onBack, onSwitch }) => {
           />
           {signUp && <p className="field-hint">At least 6 characters.</p>}
         </div>
-        {error && <p className="field-hint field-hint--warn">{error}</p>}
+        {error && (
+          <p className="form-alert" role="alert">
+            {error === "Invalid login credentials" ? "That email and password don't match an account." : error}
+          </p>
+        )}
         {notice && <p className="field-hint field-hint--ok">{notice}</p>}
       </div>
       <div className="setup-foot">
@@ -1681,14 +1650,6 @@ const AccountStep = ({ mode, onBack, onSwitch }) => {
           <button type="button" className="link" onClick={onSwitch}>
             {signUp ? "Sign in" : "Create an account"}
           </button>
-          {!signUp && (
-            <>
-              {" · "}
-              <button type="button" className="link" onClick={resetPassword}>
-                Forgot password
-              </button>
-            </>
-          )}
         </p>
       </div>
     </form>
@@ -1849,7 +1810,7 @@ const FriendsStep = ({ me, friendships, onChanged, onContinue }) => {
 const DoneStep = ({ name, moon, currentPhase, onEnter }) => (
   <div className="setup setup--done">
     <div className="onboard-hero stagger">
-      <StitchMoon fraction={moon.fraction} size={200} cell={5} />
+      <ThresholdMoon fraction={moon.fraction} size={200} />
       <h1 className="display">
         You're all set, <em>{name}.</em>
       </h1>
@@ -1881,7 +1842,7 @@ const SetPasswordScreen = ({ onDone }) => {
     <form className="app-shell setup" onSubmit={submit}>
       <div className="step-body stagger">
         <p className="mono-label">Account</p>
-        <h1 className="display">Choose a new password.</h1>
+        <h1 className="display">Choose a new password</h1>
         <div className="field">
           <label htmlFor="mc-new-password" className="mono-label">
             New password
@@ -2209,10 +2170,6 @@ const InboxScreen = ({
   return (
     <div className="app-shell app-shell--nav">
       <header className="home-head">
-        <div className="home-meta">
-          <span className="mono-label">{formatDayStamp(new Date())}</span>
-          <span className="mono-label">@{me.handle}</span>
-        </div>
         <h1 className="display display--fit">
           {greeting}
           {me.name ? (
@@ -2226,7 +2183,7 @@ const InboxScreen = ({
       {travel && <TravelCard {...travel} />}
 
       <section className="moon-panel" aria-label="Tonight's moon">
-        <StitchMoon fraction={moon.fraction} size={232} />
+        <ThresholdMoon fraction={moon.fraction} size={232} />
         <p className="mono-label">Tonight</p>
         <p className="moon-name">{moonPhaseLoading ? "Reading the sky…" : currentPhase.name}</p>
 
@@ -2564,7 +2521,7 @@ const MessageSentScreen = ({ from, recipient, currentPhase, moon, onDone }) => {
   return (
     <div className="app-shell sent">
       <div className={`sky ${traveling ? "is-traveling" : ""}`}>
-        <StitchMoon fraction={moon.fraction} size={150} cell={5} />
+        <ThresholdMoon fraction={moon.fraction} size={150} />
         <svg className="trail" viewBox="0 0 300 260" aria-hidden="true" ref={trailRef}>
           <defs>
             <mask id="trail-mask">
@@ -2619,6 +2576,49 @@ const MessageSentScreen = ({ from, recipient, currentPhase, moon, onDone }) => {
 const HOLD_TO_PAUSE_MS = 220;
 
 const cityOf = (location) => (location ? location.split(",")[0] : "");
+
+const REGION_ABBREVIATIONS = {
+  // United States
+  Alabama: "AL", Alaska: "AK", Arizona: "AZ", Arkansas: "AR", California: "CA", Colorado: "CO",
+  Connecticut: "CT", Delaware: "DE", "District of Columbia": "DC", Florida: "FL", Georgia: "GA",
+  Hawaii: "HI", Idaho: "ID", Illinois: "IL", Indiana: "IN", Iowa: "IA", Kansas: "KS", Kentucky: "KY",
+  Louisiana: "LA", Maine: "ME", Maryland: "MD", Massachusetts: "MA", Michigan: "MI", Minnesota: "MN",
+  Mississippi: "MS", Missouri: "MO", Montana: "MT", Nebraska: "NE", Nevada: "NV", "New Hampshire": "NH",
+  "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC", "North Dakota": "ND",
+  Ohio: "OH", Oklahoma: "OK", Oregon: "OR", Pennsylvania: "PA", "Rhode Island": "RI",
+  "South Carolina": "SC", "South Dakota": "SD", Tennessee: "TN", Texas: "TX", Utah: "UT", Vermont: "VT",
+  Virginia: "VA", Washington: "WA", "West Virginia": "WV", Wisconsin: "WI", Wyoming: "WY",
+  // Canada
+  Alberta: "AB", "British Columbia": "BC", Manitoba: "MB", "New Brunswick": "NB",
+  "Newfoundland and Labrador": "NL", "Nova Scotia": "NS", Ontario: "ON", "Prince Edward Island": "PE",
+  Quebec: "QC", Saskatchewan: "SK",
+  // Australia
+  "New South Wales": "NSW", Victoria: "VIC", Queensland: "QLD", "Western Australia": "WA",
+  "South Australia": "SA", Tasmania: "TAS", "Australian Capital Territory": "ACT", "Northern Territory": "NT",
+};
+
+const COUNTRY_SHORT = { "United States": "USA", "United Kingdom": "UK", "United Arab Emirates": "UAE" };
+
+// "City, Region, Country" → parts (city labels come from the geocoder in that shape)
+function parsePlace(label) {
+  const parts = (label || "").split(",").map((p) => p.trim()).filter(Boolean);
+  return {
+    city: parts[0] || "",
+    region: parts.length >= 3 ? parts[1] : null,
+    country: parts.length >= 2 ? parts[parts.length - 1] : null,
+  };
+}
+
+// Same country: just the cities. Abroad: city, short region code if there is one, and country.
+function formatRoute(fromLabel, toLabel) {
+  if (!fromLabel || !toLabel) return cityOf(fromLabel || toLabel) || "Location unavailable";
+  const a = parsePlace(fromLabel);
+  const b = parsePlace(toLabel);
+  if (a.country && a.country === b.country) return `${a.city} ↔ ${b.city}`;
+  const abroad = (p) =>
+    [p.city, REGION_ABBREVIATIONS[p.region], COUNTRY_SHORT[p.country] || p.country].filter(Boolean).join(", ");
+  return `${abroad(a)} ↔ ${abroad(b)}`;
+}
 
 const OpenedStories = ({ items, onSeen, onClose, onArchive }) => {
   const [index, setIndex] = useState(0);
@@ -2840,10 +2840,7 @@ const GalleryScreen = ({ messages }) => {
             msg.receivePhoto?.coords
           );
 
-          const locationLine =
-            sendLocation && receiveLocation
-              ? `${sendLocation} ↔ ${receiveLocation}`
-              : sendLocation || receiveLocation || "Location unavailable";
+          const locationLine = formatRoute(sendLocation, receiveLocation);
 
           const senderName = msg.rawSender || msg.from;
           const receiverName = msg.rawRecipient || msg.to;
@@ -3401,7 +3398,7 @@ const MoonCodeApp = () => {
     return (
       <div className="mooncode-app">
         <div className="app-shell app-loading" aria-label="Loading">
-          <StitchMoon fraction={moon.fraction} size={120} cell={5} />
+          <ThresholdMoon fraction={moon.fraction} size={120} />
         </div>
       </div>
     );

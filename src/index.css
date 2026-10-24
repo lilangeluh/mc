@@ -86,7 +86,8 @@ textarea {
   min-height: 100dvh;
   max-width: 480px;
   margin: 0 auto;
-  padding: calc(var(--safe-top) + 18px) var(--gutter) calc(var(--safe-bottom) + 24px);
+  /* generous bottom room so the main button sits above the thumb zone, not on the edge */
+  padding: calc(var(--safe-top) + 18px) var(--gutter) calc(var(--safe-bottom) + 48px);
   display: flex;
   flex-direction: column;
   animation: screenIn 0.5s var(--ease) both;
@@ -405,9 +406,9 @@ textarea {
   line-height: 1.7;
 }
 
-/* ---------- Stitch moon ---------- */
+/* ---------- Threshold moon ---------- */
 
-.stitch-moon {
+.threshold-moon {
   display: block;
   width: var(--moon-size);
   height: auto;
@@ -490,6 +491,27 @@ textarea {
   gap: 18px;
   margin: auto 0;
   padding: 40px 0 28px;
+}
+
+.field-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.field-label-row .link {
+  padding: 0;
+  color: var(--ink-2);
+}
+
+.form-alert {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f4e6da;
+  color: #7a4220;
+  font-size: 12.5px;
+  line-height: 1.45;
+  animation: rise 0.35s var(--ease) both;
 }
 
 .field-hint--warn {
@@ -862,7 +884,7 @@ textarea {
   text-align: center;
 }
 
-.app-loading .stitch-moon {
+.app-loading .threshold-moon {
   opacity: 0.8;
 }
 
@@ -924,7 +946,7 @@ textarea {
   margin-top: 36px;
 }
 
-.moon-panel .stitch-moon {
+.moon-panel .threshold-moon {
   margin-bottom: 26px;
 }
 
@@ -1531,14 +1553,14 @@ button.row:active {
   margin-bottom: 28px;
 }
 
-.sky .stitch-moon {
+.sky .threshold-moon {
   position: absolute;
   right: 4%;
   top: 2%;
   width: 44%;
 }
 
-.sky.is-traveling .stitch-moon {
+.sky.is-traveling .threshold-moon {
   animation: moonArrive 1.2s 1.45s var(--ease) both;
 }
 
